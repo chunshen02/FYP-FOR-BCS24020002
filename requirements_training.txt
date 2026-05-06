@@ -1,0 +1,9 @@
+torch>=2.11.0
+torchvision
+timm
+onnx
+onnxruntime>=1.25.0
+scikit-learn
+opencv-python>=4.13.0
+mediapipe>=0.10.33
+psutil

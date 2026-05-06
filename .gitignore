@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Large binaries
+*.exe
+*.dll
+*.so
+
+# Model weights (usually large)
+models/*.pt
+models/*.pth
+models/*.h5
+models/*.pkl
+models/*.bin
+
+# Logs and temp
+*.log
+*.tmp
+*.cache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime outputs
+runtime/
+
+# Jupyter
+.ipynb_checkpoints/

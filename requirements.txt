@@ -1,0 +1,7 @@
+mss>=10.1.0
+mediapipe>=0.10.33
+opencv-python>=4.13.0
+onnxruntime>=1.25.0
+PyQt6>=6.11.0
+psutil
+plyer
