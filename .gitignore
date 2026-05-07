@@ -45,8 +45,8 @@ models/*.bin
 .DS_Store
 Thumbs.db
 
-# Runtime outputs
-runtime/
+# Runtime outputs (screenshots saved by the app)
+screenshots/
 
 # Jupyter
 .ipynb_checkpoints/

@@ -65,11 +65,12 @@ def run_benchmark_pass(pass_number: int) -> dict:
 
         # Pipeline
         frame = capture.read()
-        face_crops = detector.detect(frame)
+        detections = detector.detect(frame)
+        face_crops = [d[0] for d in detections]
         tensors = [preprocessor.process(crop) for crop in face_crops]
         if engine and tensors:
             engine.run(tensors)
-        elif not face_crops:
+        elif not detections:
             # No face detected — run inference on a blank tensor for latency measurement
             dummy = preprocessor.process(np.zeros((224, 224, 3), dtype=np.uint8))
             if engine:
