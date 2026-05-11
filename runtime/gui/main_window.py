@@ -191,9 +191,20 @@ class MainWindow(QMainWindow):
         faces_container.addWidget(faces_icon)
         faces_container.addWidget(self._faces_label)
 
+        # Another separator
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.VLine)
+        sep2.setStyleSheet("color: #333333;")
+
+        # API response time readout
+        self._lbl_api_ms = QLabel("API: — ms")
+        self._lbl_api_ms.setStyleSheet("font-weight: bold; padding: 4px 12px;")
+
         control_bar.addLayout(fps_container)
         control_bar.addWidget(sep)
         control_bar.addLayout(faces_container)
+        control_bar.addWidget(sep2)
+        control_bar.addWidget(self._lbl_api_ms)
 
         return control_bar
 
@@ -558,6 +569,7 @@ class MainWindow(QMainWindow):
         )
         self._detection_worker.frame_ready.connect(self._on_frame_ready)
         self._detection_worker.fps_update.connect(self._on_fps_update)
+        self._detection_worker.api_response_update.connect(self._on_api_response_update)
         self._detection_worker.error_occurred.connect(self._on_error)
 
         # Alert thread
@@ -598,6 +610,7 @@ class MainWindow(QMainWindow):
         self._btn_start.setEnabled(True)
         self._alert_card.setVisible(False)
         self._video_widget.clear()
+        self._lbl_api_ms.setText("API: — ms")
 
         # Prompt the user only if a session was actually running
         if was_active:
@@ -681,6 +694,10 @@ class MainWindow(QMainWindow):
     def _on_fps_update(self, fps: float):
         """Update the FPS readout in the control bar."""
         self._fps_label.setText(str(round(fps)))
+
+    @pyqtSlot(float)
+    def _on_api_response_update(self, api_ms: float):
+        self._lbl_api_ms.setText(f"API: {api_ms:.0f} ms")
 
     @pyqtSlot(float)
     def _on_alert_triggered(self, peak_p_fake: float):

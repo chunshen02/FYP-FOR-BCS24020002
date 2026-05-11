@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS session_events (
     detail              TEXT,
     peak_confidence     REAL,
     breach_duration_sec REAL,
-    faces_detected      INTEGER
+    faces_detected      INTEGER,
+    api_response_ms     REAL,
+    api_request_id      TEXT
 );
 """
 
@@ -41,28 +43,34 @@ def log_event(
     peak_confidence: float = None,
     breach_duration_sec: float = None,
     faces_detected: int = None,
+    api_response_ms: float = None,
+    api_request_id: str = None,
 ) -> None:
     """
     Insert a session event record into the local SQLite database.
 
     Args:
-        event_type:          Category tag (e.g. 'ALERT', 'DISMISS', 'SESSION').
+        event_type:          Category tag (e.g. 'ALERT', 'DISMISS', 'SESSION', 'ERROR').
         detail:              Human-readable description of the event.
         peak_confidence:     Peak P_fake score at time of event (optional).
         breach_duration_sec: Duration of alert breach in seconds (optional).
         faces_detected:      Number of faces detected at time of event (optional).
+        api_response_ms:     BitMind API round-trip response time in ms (optional).
+        api_request_id:      BitMind API request identifier (optional).
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sql = """
         INSERT INTO session_events
-            (timestamp, event_type, detail, peak_confidence, breach_duration_sec, faces_detected)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (timestamp, event_type, detail, peak_confidence,
+             breach_duration_sec, faces_detected, api_response_ms, api_request_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """
     try:
         conn = _get_connection()
         conn.execute(sql, (
             timestamp, event_type, detail,
-            peak_confidence, breach_duration_sec, faces_detected
+            peak_confidence, breach_duration_sec, faces_detected,
+            api_response_ms, api_request_id
         ))
         conn.commit()
         conn.close()
@@ -79,11 +87,12 @@ def get_session_history(limit: int = 100) -> list:
 
     Returns:
         List of dicts with keys: id, timestamp, event_type, detail,
-        peak_confidence, breach_duration_sec, faces_detected.
+        peak_confidence, breach_duration_sec, faces_detected, api_response_ms, api_request_id.
     """
     sql = """
         SELECT id, timestamp, event_type, detail,
-               peak_confidence, breach_duration_sec, faces_detected
+               peak_confidence, breach_duration_sec, faces_detected,
+               api_response_ms, api_request_id
         FROM session_events
         ORDER BY id DESC
         LIMIT ?
@@ -94,7 +103,8 @@ def get_session_history(limit: int = 100) -> list:
         rows = cursor.fetchall()
         conn.close()
         keys = ["id", "timestamp", "event_type", "detail",
-                "peak_confidence", "breach_duration_sec", "faces_detected"]
+                "peak_confidence", "breach_duration_sec", "faces_detected",
+                "api_response_ms", "api_request_id"]
         return [dict(zip(keys, row)) for row in rows]
     except sqlite3.Error as e:
         print(f"[WARNING] Database read failed: {e}")

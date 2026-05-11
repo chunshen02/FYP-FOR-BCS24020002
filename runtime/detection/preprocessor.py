@@ -1,55 +1,38 @@
 """
 preprocessor.py
 
-Converts a BGR face crop into a normalised float32 tensor
-ready for ONNX Runtime inference.
+Prepares a BGR face crop for submission to the BitMind API.
+Outputs JPEG-encoded bytes ready for an HTTP POST request.
 """
 
-import numpy as np
 import cv2
+import numpy as np
 import sys
 import os
-
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
 
 
 class Preprocessor:
     """
-    Prepares a BGR face crop for EfficientNet-B4 ONNX inference.
-    Preprocessing is identical to the training pipeline to prevent
-    train-inference distribution mismatch.
+    Converts a BGR face crop to JPEG bytes for BitMind API submission.
+
+    cv2.imencode handles BGR→YCbCr internally, so no channel swap is needed.
+    The resulting JPEG decodes to correct RGB on the server side.
     """
 
-    def __init__(self):
-        self._mean = np.array(config.INPUT_MEAN, dtype=np.float32)
-        self._std = np.array(config.INPUT_STD, dtype=np.float32)
-        self._size = (config.INPUT_SIZE, config.INPUT_SIZE)
-
-    def process(self, face_bgr: np.ndarray) -> np.ndarray:
+    def process(self, face_bgr: np.ndarray) -> bytes:
         """
-        Convert a BGR face crop to a float32 inference tensor.
+        Convert a BGR face crop to JPEG bytes.
 
         Args:
-            face_bgr: BGR numpy array (any size).
+            face_bgr: BGR numpy array of the aligned face crop (any size).
 
         Returns:
-            float32 numpy array of shape (1, 3, 224, 224).
+            JPEG-encoded bytes of the face crop.
         """
-        # Step 1: Resize using bicubic interpolation
-        image = cv2.resize(face_bgr, self._size, interpolation=cv2.INTER_CUBIC)
-
-        # Step 2: BGR -> RGB
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        # Step 3: Normalise to [0, 1] then apply ImageNet mean/std
-        image = image.astype(np.float32) / 255.0
-        image = (image - self._mean) / self._std
-
-        # Step 4: HWC -> CHW
-        image = np.transpose(image, (2, 0, 1))
-
-        # Step 5: Add batch dimension -> (1, 3, 224, 224)
-        image = np.expand_dims(image, axis=0)
-
-        return image.astype(np.float32)
+        _, buf = cv2.imencode(
+            '.jpg', face_bgr,
+            [cv2.IMWRITE_JPEG_QUALITY, config.FACE_CROP_JPEG_QUALITY]
+        )
+        return buf.tobytes()

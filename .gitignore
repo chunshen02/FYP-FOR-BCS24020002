@@ -1,3 +1,7 @@
+# API credentials
+.env
+*.env
+
 # Python
 __pycache__/
 *.py[cod]
@@ -23,13 +27,6 @@ env/
 *.exe
 *.dll
 *.so
-
-# Model weights (usually large)
-models/*.pt
-models/*.pth
-models/*.h5
-models/*.pkl
-models/*.bin
 
 # Logs and temp
 *.log

@@ -105,13 +105,15 @@ class FaceDetector:
             )
             x_min, y_min, x_max, y_max = map(int, (x_min, y_min, x_max, y_max))
 
-            frame_work = frame_bgr.copy()
             if det.keypoints and len(det.keypoints) >= 2:
                 angle = _get_rotation_angle(det.keypoints, w, h)
                 if abs(angle) > config.ALIGNMENT_ANGLE_THRESHOLD:
-                    frame_work = _align_face(frame_work, angle)
+                    crop = _align_face(frame_bgr.copy(), angle)[y_min:y_max, x_min:x_max]
+                else:
+                    crop = frame_bgr[y_min:y_max, x_min:x_max].copy()
+            else:
+                crop = frame_bgr[y_min:y_max, x_min:x_max].copy()
 
-            crop = frame_work[y_min:y_max, x_min:x_max]
             if crop.size == 0:
                 continue
 
