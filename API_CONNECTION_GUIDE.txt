@@ -1,0 +1,101 @@
+================================================================
+  HOW THE SYSTEM CONNECTS TO THE BITMIND API
+================================================================
+
+OVERVIEW
+--------
+The system uses the BitMind Oracle API to analyse face images
+and determine whether they are real or AI-generated (deepfake).
+The connection requires only an API key and an internet
+connection. No model is installed locally — all detection is
+handled by the remote API.
+
+
+STEP 1 — GET AN API KEY
+------------------------
+1. Go to the BitMind website and create an account.
+2. Copy the API key provided in your account dashboard.
+3. In the project folder, create a file named:
+
+       .env
+
+4. Open the file and add the following line:
+
+       BITMIND_API_KEY=your_api_key_here
+
+   Example:
+       BITMIND_API_KEY=bitmind_abc123xyz
+
+5. Save the file. The system will load the key automatically
+   when it starts. The .env file is never shared or uploaded.
+
+
+STEP 2 — HOW THE SYSTEM SENDS A REQUEST
+-----------------------------------------
+When a face is detected on screen, the system:
+
+  1. Crops the face from the screen.
+  2. Resizes it to 224 x 224 pixels.
+  3. Encodes the image as a JPEG file.
+  4. Converts the JPEG to a Base64 text string.
+  5. Sends an HTTP POST request to:
+
+         https://api.bitmind.ai/detect-image
+
+     with the following JSON body:
+
+         { "image": "data:image/jpeg;base64,<encoded_image>" }
+
+     and the following request header:
+
+         Authorization: Bearer <your_api_key>
+
+
+STEP 3 — HOW THE SYSTEM READS THE RESPONSE
+--------------------------------------------
+The API returns a JSON response in this format:
+
+    {
+        "isAI"      : true or false,
+        "confidence": 0.0 to 1.0
+    }
+
+  - isAI       tells the system whether the face is AI-generated.
+  - confidence tells the system how certain the result is.
+
+The system converts these two values into a single fake score:
+
+    If isAI is TRUE  -> fake_score = confidence
+    If isAI is FALSE -> fake_score = 1.0 - confidence
+
+A fake_score of 1.0 means the system is 100% sure it is a
+deepfake. A score of 0.0 means the face is almost certainly real.
+
+
+STEP 4 — RISK LEVELS
+----------------------
+The fake_score is compared against two thresholds:
+
+    Score below 50%   ->  GREEN   (face appears real)
+    Score 50% to 69%  ->  AMBER   (suspicious, monitor closely)
+    Score 70% or above -> RED     (deepfake alert triggered)
+
+These thresholds can be adjusted in config.py.
+
+
+STEP 5 — RATE LIMIT
+---------------------
+The free tier of the BitMind API allows 1 request per second.
+The system automatically waits 1 second between each API call
+to stay within this limit. No manual configuration is needed.
+
+
+SUMMARY
+-------
+To connect the system to the BitMind API, only one action is
+required from the user: place the API key inside the .env file.
+Everything else — sending the image, reading the response,
+applying the risk level, and triggering alerts — is handled
+automatically by the system.
+
+================================================================

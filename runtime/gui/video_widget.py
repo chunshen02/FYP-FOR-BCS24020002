@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 )
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, pyqtSlot
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
@@ -49,6 +49,11 @@ class VideoWidget(QWidget):
         self._frame_size = (0, 0)
         self._display_size = (0, 0)
         self._offset = (0, 0)
+
+        self._blink_on = True
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._toggle_blink)
+        self._blink_timer.start(500)
 
     @pyqtSlot(object, object)
     def update_frame(self, frame: np.ndarray, results: list):
@@ -164,23 +169,30 @@ class VideoWidget(QWidget):
                 badge_text
             )
 
-    def _draw_live_indicator(self, painter: QPainter):
-        """Draw LIVE indicator in top-left corner of the video area."""
-        circle_x = self._offset[0] + 8
-        circle_y = self._offset[1] + 8
-        circle_size = 8
+    def _toggle_blink(self):
+        self._blink_on = not self._blink_on
+        if self._current_pixmap is not None:
+            self.update()
 
-        painter.setBrush(QBrush(QColor("#00FF00")))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(circle_x, circle_y, circle_size, circle_size)
+    def _draw_live_indicator(self, painter: QPainter):
+        """Draw blinking LIVE indicator in top-left corner of the video area."""
+        circle_x = self._offset[0] + 10
+        circle_y = self._offset[1] + 10
+        circle_size = 10
+
+        if self._blink_on:
+            painter.setBrush(QBrush(QColor("#FF3B3B")))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(circle_x, circle_y, circle_size, circle_size)
 
         font = QFont("Segoe UI", 11)
+        font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QColor(255, 255, 255, 127))
+        painter.setPen(QColor(255, 255, 255, 200))
         painter.drawText(
-            circle_x + 12, circle_y, 200, 16,
+            circle_x + 16, circle_y, 200, circle_size,
             Qt.AlignmentFlag.AlignVCenter,
-            "LIVE — Zoom Meeting"
+            "DETECTING"
         )
 
     @staticmethod

@@ -1,0 +1,235 @@
+================================================================
+  DEEPFAKE DETECTOR — FILE DESCRIPTIONS
+================================================================
+
+----------------------------------------------------------------
+1. main.py
+----------------------------------------------------------------
+The application entry point. Creates the PyQt6 QApplication
+instance, sets the application name and version, instantiates
+the MainWindow, and starts the Qt event loop. This is the only
+file that should be executed directly to launch the program.
+
+----------------------------------------------------------------
+2. config.py
+----------------------------------------------------------------
+Central configuration file that stores all tuneable constants
+used across the entire project. This includes:
+  - File paths (database location)
+  - BitMind API endpoint URL and timeout settings
+  - Rate limit delay between API requests
+  - MediaPipe face detection confidence threshold
+  - Bounding box expansion ratio and alignment angle threshold
+  - Face crop size and JPEG quality for API submission
+  - Fake/warning score thresholds (FAKE_THRESHOLD, WARNING_THRESHOLD)
+  - EMA smoothing factor (EMA_ALPHA)
+  - Alert trigger and dismiss frame counters
+  - Performance benchmark targets (FPS, latency, CPU, RAM)
+No logic lives here — only constants. All other modules import
+from this file, making tuning a one-place operation.
+
+----------------------------------------------------------------
+3. runtime/capture/screen_capture.py
+----------------------------------------------------------------
+Handles real-time desktop screen capture using the mss library.
+The ScreenCapture class initialises an mss capture context,
+grabs frames from a configurable region of the screen (defaulting
+to the full primary monitor), converts the raw BGRA output to
+BGR numpy arrays, and exposes start(), read(), set_region(), and
+stop() methods. This module is the source of raw frames that feed
+the detection pipeline.
+
+----------------------------------------------------------------
+4. runtime/detection/face_detector.py
+----------------------------------------------------------------
+Performs face detection and alignment on BGR frames using the
+MediaPipe BlazeFace Tasks API. On first run it downloads the
+BlazeFace short-range TFLite model. The FaceDetector class
+detects all faces in a frame, expands each bounding box by a
+configurable ratio, optionally applies affine rotation alignment
+if the face tilt exceeds a threshold, and returns a list of
+(crop, bbox) tuples. The bbox dictionary contains pixel
+coordinates used by the overlay renderer and inference engine.
+
+----------------------------------------------------------------
+5. runtime/detection/preprocessor.py
+----------------------------------------------------------------
+Converts a raw BGR face crop (numpy array) into JPEG-encoded
+bytes ready for HTTP submission to the BitMind API. The
+Preprocessor class resizes the crop to the configured square
+size (FACE_CROP_SIZE) using area interpolation and encodes it
+as JPEG at the configured quality (FACE_CROP_JPEG_QUALITY).
+OpenCV handles the BGR-to-YCbCr conversion internally, so the
+resulting JPEG decodes correctly as RGB on the server side.
+
+----------------------------------------------------------------
+6. runtime/detection/inference.py
+----------------------------------------------------------------
+Submits JPEG face crop bytes to the BitMind Oracle API and
+returns classification results. Key components:
+
+  - FaceResult (dataclass): holds raw P_fake score, EMA-smoothed
+    display score, risk level (GREEN/AMBER/RED), API response
+    time in milliseconds, bounding box, and last-updated timestamp.
+
+  - DeepfakeInferenceEngine: maintains a persistent requests
+    Session with the Bearer token, tracks per-face EMA state
+    keyed by face ID, enforces the 1 request/second rate limit
+    on the free tier, base64-encodes the JPEG payload, POSTs it
+    to the API, and parses the isAI + confidence fields to derive
+    P_fake. It also exposes evict_stale_ema() to clean up state
+    for faces that have left the frame.
+
+----------------------------------------------------------------
+7. runtime/threads/detection_worker.py
+----------------------------------------------------------------
+The core QThread that runs the real-time detection pipeline
+continuously in the background. Architecture:
+
+  - Main loop (~15 FPS): captures a screen frame, runs face
+    detection, assigns stable IDs via _FaceTracker, prepares
+    JPEG crops, emits annotated frames and FaceResult lists to
+    the GUI thread via Qt signals.
+
+  - API daemon thread: round-robins through all currently
+    visible faces, calling the BitMind API once per face per
+    cycle (rate limit is enforced inside DeepfakeInferenceEngine).
+    Results are cached and shared back to the main loop via a
+    thread-safe lock.
+
+  - _FaceTracker: assigns stable string IDs to faces across
+    frames using bounding box centre proximity, ensuring that
+    per-face EMA state and cached results remain consistent even
+    when faces reorder or briefly disappear.
+
+  - _draw_overlays(): draws colour-coded rectangles and
+    confidence labels (GREEN < 50% | AMBER 50–70% | RED ≥ 70%)
+    directly onto the frame using OpenCV before emitting it.
+
+----------------------------------------------------------------
+8. runtime/threads/alert_thread.py
+----------------------------------------------------------------
+A lightweight QThread that monitors the stream of FaceResult
+lists produced by DetectionWorker and manages alert state.
+It counts consecutive RED frames: if ALERT_TRIGGER_FRAMES are
+seen in a row it emits alert_triggered(peak_p_fake); once the
+alert is active it counts consecutive non-RED frames and emits
+alert_dismissed() after ALERT_DISMISS_FRAMES. This hysteresis
+logic prevents rapid flickering of the alert card in the GUI.
+Incoming result batches are queued non-blocking (frames are
+dropped if the queue is full) to avoid stalling the GUI thread.
+
+----------------------------------------------------------------
+9. runtime/gui/main_window.py
+----------------------------------------------------------------
+The main PyQt6 application window. It wires all GUI components
+and background threads together. Responsibilities include:
+
+  - Building the full window layout: left panel (video + control
+    bar), right panel (confidence card, alert card, session info
+    card, session log), session history table, and status bar.
+  - Starting and stopping DetectionWorker and AlertThread,
+    connecting all Qt signals to their respective slots.
+  - Updating the confidence progress bar, FPS readout, face
+    count, and session duration in real time.
+  - Showing/hiding the alert card and updating status indicators
+    (Idle / Initializing / Detecting / Alert / Stopping).
+  - Prompting the user to save or discard the session on stop.
+  - Taking screenshots of the live video feed.
+  - Using SetWindowDisplayAffinity (Windows API) to exclude the
+    application window from mss screen capture, preventing the
+    detector from analysing its own UI.
+
+----------------------------------------------------------------
+10. runtime/gui/video_widget.py
+----------------------------------------------------------------
+A custom QWidget subclass responsible for displaying live video
+frames with face detection overlays. It converts incoming BGR
+numpy frames to QPixmap, scales them to fit the widget while
+preserving aspect ratio, and uses a QPainter-based paintEvent
+to draw:
+  - Colour-coded bounding boxes (GREEN/AMBER/RED) around faces.
+  - Confidence badges (e.g. "Deepfake 82.3%" or "Real 94.1%")
+    below each bounding box, using the EMA-smoothed score.
+  - A blinking red circle with a "DETECTING" label in the
+    top-left corner while a feed is active.
+It also exposes grab_screenshot() to capture the current frame
+as a QPixmap for saving to disk.
+
+----------------------------------------------------------------
+11. runtime/gui/session_log.py
+----------------------------------------------------------------
+A read-only QTextEdit subclass that displays a colour-coded,
+timestamped log of all detection events within the current
+session. Each event type has a distinct colour:
+  - ALERT  → red
+  - DISMISS → green
+  - SESSION → grey
+  - INFO    → light grey
+  - ERROR   → orange
+New entries are appended with HTML formatting and the scroll
+position is automatically advanced to the latest entry.
+
+----------------------------------------------------------------
+12. runtime/gui/dialogs.py
+----------------------------------------------------------------
+Contains the SaveSessionDialog modal dialog shown when the user
+presses Stop. It displays the session duration, number of alerts
+triggered, and a colour-coded result badge ("Deepfake detected"
+in red or "Clean" in green). The user can click Save (accepted)
+to persist the session to the database, or Discard (rejected)
+to drop it. The dialog result is checked in MainWindow._on_stop()
+to decide whether to write the stop event to the database.
+
+----------------------------------------------------------------
+13. runtime/gui/alert_system.py
+----------------------------------------------------------------
+Provides the AlertOverlay helper class, which applies a red
+border stylesheet to a target widget when an alert fires and
+removes it when the alert is dismissed. It also sends a Windows
+desktop toast notification via the plyer library, showing the
+peak P_fake confidence score. Toast delivery is wrapped in a
+try/except so that a missing or unavailable notification backend
+never crashes the application.
+
+----------------------------------------------------------------
+14. runtime/storage/database.py
+----------------------------------------------------------------
+Local SQLite persistence layer for session event logging. All
+data is stored in a single file on the host machine (DB_PATH
+from config.py) and is never transmitted externally. Key
+functions:
+
+  - log_event(): inserts a timestamped record with event type,
+    detail text, and optional numeric fields (peak_confidence,
+    breach_duration_sec, faces_detected, api_response_ms).
+  - get_session_history(): retrieves the most recent raw event
+    rows ordered by ID descending.
+  - get_all_sessions(): reconstructs completed sessions from the
+    event log by pairing "Detection started" and "Detection
+    stopped" SESSION events, counting ALERT events in between,
+    and computing the duration — returns a list of summary dicts
+    displayed in the history table.
+  - clear_history(): deletes all records (used for testing only).
+
+----------------------------------------------------------------
+15. benchmark.py
+----------------------------------------------------------------
+Standalone script for measuring end-to-end pipeline performance.
+It runs BENCHMARK_REPEAT passes, each consisting of a warmup
+phase followed by a measurement phase. Per pass it records:
+  - Frame-level end-to-end latency (ms)
+  - FPS sampled every second
+  - CPU utilisation (psutil)
+  - Peak RAM usage (psutil)
+  - BitMind API response time (if API key is configured)
+
+After all passes it prints a summary table comparing measured
+values against the targets defined in config.py (TARGET_FPS,
+TARGET_LATENCY_MS, TARGET_CPU_PERCENT, TARGET_RAM_MB) with
+PASS/FAIL status for each metric, and reports FPS variance
+across passes as a stability indicator.
+
+================================================================
+  END OF FILE DESCRIPTIONS
+================================================================

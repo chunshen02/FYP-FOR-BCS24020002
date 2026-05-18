@@ -69,11 +69,14 @@ def run_benchmark_pass(pass_number: int) -> dict:
         face_crops = detector.detect(frame)
 
         if api_enabled:
-            jpeg_list = [preprocessor.process(crop) for crop in face_crops]
+            jpeg_list = [preprocessor.process(crop) for crop, _ in face_crops]
             if not jpeg_list:
                 dummy_crop = np.zeros((224, 224, 3), dtype=np.uint8)
                 jpeg_list = [preprocessor.process(dummy_crop)]
-            results = engine.run(jpeg_list)
+            results = [
+                engine.run_single(jpeg, bbox={}, face_id=f"bench_{i}")
+                for i, jpeg in enumerate(jpeg_list)
+            ]
             if results and in_measurement:
                 avg_api_ms = sum(r.api_response_ms for r in results) / len(results)
                 api_ms_samples.append(avg_api_ms)

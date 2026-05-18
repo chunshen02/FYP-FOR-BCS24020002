@@ -564,6 +564,7 @@ class MainWindow(QMainWindow):
 
         # Detection worker
         self._detection_worker = DetectionWorker()
+        self._detection_worker.set_exclusion_region(self._window_screen_rect())
         self._detection_worker.frame_ready.connect(
             self._video_widget.update_frame
         )
@@ -909,6 +910,31 @@ QTextEdit#session_log {
     padding: 4px;
 }
 """
+
+    # -- Window geometry exclusion --------------------------------------------
+
+    def _window_screen_rect(self) -> tuple:
+        """Return window frame bounds in physical pixels for mss exclusion."""
+        ratio = self.devicePixelRatioF()
+        geo = self.frameGeometry()
+        return (
+            int(geo.x() * ratio),
+            int(geo.y() * ratio),
+            int(geo.width() * ratio),
+            int(geo.height() * ratio),
+        )
+
+    def _sync_exclusion(self):
+        if self._detection_worker and self._session_active:
+            self._detection_worker.set_exclusion_region(self._window_screen_rect())
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._sync_exclusion()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._sync_exclusion()
 
     # -- Cleanup ---------------------------------------------------------------
 

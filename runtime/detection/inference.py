@@ -5,13 +5,14 @@ Submits JPEG face crop bytes to the BitMind API and returns
 raw and EMA-smoothed fake confidence scores.
 
 BitMind API:
-    Endpoint : https://api.bitmind.ai/oracle/v1/image-detect
+    Endpoint : https://api.bitmind.ai/detect-image
     Method   : HTTP POST
     Auth     : Bearer token (API key from .env)
-    Body     : multipart/form-data with field 'image' containing JPEG bytes
-    Response : JSON { "result": { "fake": <float 0.0-1.0>, ... } }
+    Body     : JSON { "image": "data:image/jpeg;base64,<b64>" }
+    Response : JSON { "isAI": <bool>, "confidence": <float 0.0-1.0>, ... }
 """
 
+import base64
 import os
 import sys
 import time
@@ -33,6 +34,8 @@ class FaceResult:
     p_fake_display: float    # EMA-smoothed P_fake — used for visual overlay
     risk_level: str          # "GREEN", "AMBER", or "RED"
     api_response_ms: float   # Round-trip API response time in milliseconds
+    bbox: dict               # {"x", "y", "w", "h"} in frame pixels
+    last_updated: float = 0.0  # time.perf_counter() at last API call
 
 
 def _get_risk_level(p_fake: float) -> str:
@@ -60,48 +63,34 @@ class DeepfakeInferenceEngine:
 
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self._api_key}"})
-        self._ema_state: list = []   # One smoothed score per face slot
+        self._ema_state: dict = {}   # face_id -> smoothed score
         self._last_call_time: float = 0.0
 
-    def run(self, jpeg_bytes_list: list) -> list:
+    def run_single(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
         """
-        Submit a list of JPEG face crop byte payloads to the BitMind API.
+        Submit one face crop to the BitMind API and return its result.
 
-        Args:
-            jpeg_bytes_list: List of bytes objects, one per detected face.
-                             Each element is the JPEG output of Preprocessor.process().
-
-        Returns:
-            List of FaceResult objects, one per face.
-            Returns an empty list if jpeg_bytes_list is empty.
+        Maintains per-face EMA state keyed by face_id so scores remain
+        stable across frames regardless of detection order.
         """
-        results = []
+        p_fake_raw, api_ms = self._call_api(jpeg_bytes)
+        prev_ema = self._ema_state.get(face_id, 0.0)
+        p_fake_display = (config.EMA_ALPHA * p_fake_raw
+                          + (1 - config.EMA_ALPHA) * prev_ema)
+        self._ema_state[face_id] = p_fake_display
+        return FaceResult(
+            p_fake_raw=p_fake_raw,
+            p_fake_display=p_fake_display,
+            risk_level=_get_risk_level(p_fake_raw),
+            api_response_ms=api_ms,
+            bbox=bbox,
+            last_updated=time.perf_counter(),
+        )
 
-        # Extend EMA state if more faces appear than previously tracked
-        while len(self._ema_state) < len(jpeg_bytes_list):
-            self._ema_state.append(0.0)
-
-        for i, jpeg_bytes in enumerate(jpeg_bytes_list):
-            p_fake_raw, api_ms = self._call_api(jpeg_bytes)
-
-            # EMA smoothing for display
-            prev_ema = self._ema_state[i]
-            p_fake_display = (config.EMA_ALPHA * p_fake_raw
-                              + (1 - config.EMA_ALPHA) * prev_ema)
-            self._ema_state[i] = p_fake_display
-
-            results.append(FaceResult(
-                p_fake_raw=p_fake_raw,
-                p_fake_display=p_fake_display,
-                risk_level=_get_risk_level(p_fake_raw),  # use raw for risk
-                api_response_ms=api_ms
-            ))
-
-        # Trim EMA state if fewer faces appear this frame
-        if len(jpeg_bytes_list) < len(self._ema_state):
-            self._ema_state = self._ema_state[:len(jpeg_bytes_list)]
-
-        return results
+    def evict_stale_ema(self, active_ids: set):
+        """Remove EMA entries for face IDs no longer visible."""
+        self._ema_state = {k: v for k, v in self._ema_state.items()
+                           if k in active_ids}
 
     def _call_api(self, jpeg_bytes: bytes) -> tuple:
         """
@@ -120,9 +109,10 @@ class DeepfakeInferenceEngine:
 
         t_start = time.perf_counter()
         try:
+            b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
             response = self._session.post(
                 config.BITMIND_API_ENDPOINT,
-                files={"image": ("face.jpg", jpeg_bytes, "image/jpeg")},
+                json={"image": f"data:image/jpeg;base64,{b64}"},
                 timeout=config.BITMIND_API_TIMEOUT_SEC
             )
             api_ms = (time.perf_counter() - t_start) * 1000
@@ -130,8 +120,9 @@ class DeepfakeInferenceEngine:
 
             if response.status_code == 200:
                 data = response.json()
-                # BitMind response format: { "result": { "fake": <float> } }
-                p_fake = float(data.get("result", {}).get("fake", 0.0))
+                is_ai = data.get("isAI", False)
+                confidence = float(data.get("confidence", 0.0))
+                p_fake = confidence if is_ai else 1.0 - confidence
                 return p_fake, api_ms
             else:
                 print(f"[WARNING] BitMind API returned status {response.status_code}: {response.text}")
@@ -151,7 +142,7 @@ class DeepfakeInferenceEngine:
 
     def reset_ema(self):
         """Reset EMA state. Call when detection is stopped and restarted."""
-        self._ema_state = []
+        self._ema_state = {}
 
     def close(self):
         """Close the underlying HTTP session."""

@@ -4,8 +4,16 @@ detection_worker.py
 QThread that runs the real-time detection pipeline continuously.
 Pipeline: Screen Capture → Face Detection → JPEG Preprocessing → BitMind API
 Emits annotated frames and FaceResult lists to the GUI thread.
+
+Architecture:
+  Main loop   — capture + face detection at ~15 FPS; uses cached API results.
+  API thread  — processes one face per second (rate limit), round-robin across
+                all currently visible faces so every participant gets updated.
+  _FaceTracker — assigns stable IDs to faces across frames so per-face EMA
+                and result caching remain consistent even as faces reorder.
 """
 
+import threading
 import time
 import numpy as np
 import cv2
@@ -17,8 +25,46 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from runtime.capture.screen_capture import ScreenCapture
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
-from runtime.detection.inference import DeepfakeInferenceEngine, FaceResult
+from runtime.detection.inference import DeepfakeInferenceEngine
 import config
+
+_DISPLAY_FPS = 15
+_FRAME_INTERVAL = 1.0 / _DISPLAY_FPS
+
+
+class _FaceTracker:
+    """Assigns stable IDs to faces across frames using bbox centre proximity."""
+
+    _MAX_DIST = 80  # pixels; faces whose centres move ≤ this are the same person
+
+    def __init__(self):
+        self._tracks: dict = {}   # face_id -> (cx, cy)
+        self._counter: int = 0
+
+    def update(self, bboxes: list) -> list:
+        """Match bboxes to existing tracks; assign new IDs to unmatched faces."""
+        centers = [(b["x"] + b["w"] // 2, b["y"] + b["h"] // 2) for b in bboxes]
+        new_tracks: dict = {}
+        used_ids: set = set()
+        ids: list = []
+
+        for cx, cy in centers:
+            best_id, best_dist = None, self._MAX_DIST
+            for tid, (tx, ty) in self._tracks.items():
+                if tid in used_ids:
+                    continue
+                dist = ((cx - tx) ** 2 + (cy - ty) ** 2) ** 0.5
+                if dist < best_dist:
+                    best_dist, best_id = dist, tid
+            if best_id is None:
+                best_id = f"f{self._counter}"
+                self._counter += 1
+            used_ids.add(best_id)
+            new_tracks[best_id] = (cx, cy)
+            ids.append(best_id)
+
+        self._tracks = new_tracks
+        return ids
 
 
 class DetectionWorker(QThread):
@@ -47,13 +93,23 @@ class DetectionWorker(QThread):
         super().__init__(parent)
         self._region = region
         self._running = False
+        # Shared state between main loop and API thread
+        self._pending_lock = threading.Lock()
+        self._pending_faces: dict = {}   # face_id -> (jpeg_bytes, bbox)
+        self._result_lock = threading.Lock()
+        self._cached_results: dict = {}  # face_id -> FaceResult
+        self._excl_lock = threading.Lock()
+        self._excl_rect: tuple | None = None  # (x, y, w, h) physical pixels
 
     def run(self):
         self._running = True
+        self._pending_faces.clear()
+        self._cached_results.clear()
 
         capture = ScreenCapture(region=self._region)
         detector = FaceDetector()
         preprocessor = Preprocessor()
+        tracker = _FaceTracker()
 
         try:
             engine = DeepfakeInferenceEngine()
@@ -63,35 +119,51 @@ class DetectionWorker(QThread):
 
         capture.start()
 
+        api_thread = threading.Thread(
+            target=self._api_loop,
+            args=(engine,),
+            daemon=True,
+        )
+        api_thread.start()
+
         frame_count = 0
         fps_timer_start = time.perf_counter()
 
         try:
             while self._running:
-                # Step 1: Capture frame
+                t_frame_start = time.perf_counter()
+
                 frame = capture.read()
+                detection_frame = self._mask_exclusion(frame)
+                face_crops = detector.detect(detection_frame)
+                bboxes = [b for _, b in face_crops]
+                face_ids = tracker.update(bboxes)
 
-                # Step 2: Detect faces
-                face_crops = detector.detect(frame)
+                if face_crops:
+                    # Update pending crops for the API thread (one entry per face)
+                    with self._pending_lock:
+                        for (crop, bbox), fid in zip(face_crops, face_ids):
+                            self._pending_faces[fid] = (
+                                preprocessor.process(crop), bbox
+                            )
+                    engine.evict_stale_ema(set(face_ids))
+                else:
+                    with self._pending_lock:
+                        self._pending_faces.clear()
+                    with self._result_lock:
+                        self._cached_results.clear()
 
-                # Step 3: Preprocess each crop to JPEG bytes
-                jpeg_list = [preprocessor.process(crop) for crop in face_crops]
+                # Build ordered result list matching currently detected faces
+                with self._result_lock:
+                    results = [
+                        self._cached_results[fid]
+                        for fid in face_ids
+                        if fid in self._cached_results
+                    ]
 
-                # Step 4: Submit to BitMind API
-                results = engine.run(jpeg_list) if jpeg_list else []
-
-                # Step 5: Emit API response time if available
-                if results:
-                    avg_api_ms = sum(r.api_response_ms for r in results) / len(results)
-                    self.api_response_update.emit(avg_api_ms)
-
-                # Step 6: Draw overlays
                 annotated_frame = self._draw_overlays(frame.copy(), results)
-
-                # Emit to GUI thread
                 self.frame_ready.emit(annotated_frame, results)
 
-                # FPS calculation (every 30 frames)
                 frame_count += 1
                 if frame_count % 30 == 0:
                     elapsed = time.perf_counter() - fps_timer_start
@@ -99,13 +171,71 @@ class DetectionWorker(QThread):
                     self.fps_update.emit(fps)
                     fps_timer_start = time.perf_counter()
 
+                elapsed_frame = time.perf_counter() - t_frame_start
+                sleep_time = _FRAME_INTERVAL - elapsed_frame
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
         except Exception as e:
             self.error_occurred.emit(str(e))
         finally:
+            self._running = False
+            api_thread.join(timeout=3)
             engine.reset_ema()
             engine.close()
             detector.close()
             capture.stop()
+
+    def _api_loop(self, engine: DeepfakeInferenceEngine):
+        """
+        Daemon thread: round-robin through pending face crops, calling the
+        BitMind API once per face per cycle (rate limit enforced inside engine).
+        """
+        while self._running:
+            with self._pending_lock:
+                if self._pending_faces:
+                    # Take the next face in insertion order
+                    face_id, (jpeg_bytes, bbox) = next(
+                        iter(self._pending_faces.items())
+                    )
+                    # Move it to the back so other faces get a turn next
+                    del self._pending_faces[face_id]
+                    self._pending_faces[face_id] = (jpeg_bytes, bbox)
+                else:
+                    face_id = None
+
+            if face_id is None:
+                time.sleep(0.05)
+                continue
+
+            result = engine.run_single(jpeg_bytes, bbox, face_id)
+
+            with self._result_lock:
+                self._cached_results[face_id] = result
+
+            self.api_response_update.emit(result.api_response_ms)
+
+    def set_exclusion_region(self, rect: tuple | None):
+        """Set a screen region (x, y, w, h) in physical pixels to blank before detection."""
+        with self._excl_lock:
+            self._excl_rect = rect
+
+    def _mask_exclusion(self, frame: np.ndarray) -> np.ndarray:
+        """Return frame with the exclusion region zeroed out, or the original if unset."""
+        with self._excl_lock:
+            excl = self._excl_rect
+        if excl is None:
+            return frame
+        x, y, w, h = excl
+        y1 = max(0, y)
+        y2 = min(frame.shape[0], y + h)
+        x1 = max(0, x)
+        x2 = min(frame.shape[1], x + w)
+        if y2 <= y1 or x2 <= x1:
+            return frame
+        masked = frame.copy()
+        masked[y1:y2, x1:x2] = 0
+        return masked
 
     def stop(self):
         """Signal the detection loop to stop cleanly."""
@@ -116,17 +246,21 @@ class DetectionWorker(QThread):
         self._region = region
 
     def _draw_overlays(self, frame: np.ndarray, results: list) -> np.ndarray:
-        """
-        Draw confidence score labels on the frame.
-        GREEN < 0.5 | AMBER 0.5–0.7 | RED >= 0.7
-        """
+        """Draw bounding boxes and confidence score labels. GREEN < 0.5 | AMBER 0.5–0.7 | RED >= 0.7"""
         for i, result in enumerate(results):
             colour = self._OVERLAY_COLOURS.get(result.risk_level, (255, 255, 255))
+            b = result.bbox
+            x1, y1 = b["x"], b["y"]
+            x2, y2 = x1 + b["w"], y1 + b["h"]
+            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+
+            elapsed = time.perf_counter() - result.last_updated
+            age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
             label = (f"Fake: {result.p_fake_display:.2%} "
                      f"[{result.risk_level}] "
-                     f"API: {result.api_response_ms:.0f}ms")
-            y_offset = 30 + i * 50
-            cv2.putText(frame, label, (10, y_offset),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                     f"(updated {age_str})")
+            label_y = max(y1 - 8, 20)
+            cv2.putText(frame, label, (x1, label_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                         colour, 2, cv2.LINE_AA)
         return frame
