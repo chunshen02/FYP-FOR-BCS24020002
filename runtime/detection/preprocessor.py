@@ -32,7 +32,7 @@ class Preprocessor:
             JPEG-encoded bytes of the face crop.
         """
         size = config.FACE_CROP_SIZE
-        resized = cv2.resize(face_bgr, (size, size), interpolation=cv2.INTER_AREA)
+        resized = cv2.resize(face_bgr, (size, size), interpolation=cv2.INTER_CUBIC)
         _, buf = cv2.imencode(
             '.jpg', resized,
             [cv2.IMWRITE_JPEG_QUALITY, config.FACE_CROP_JPEG_QUALITY]

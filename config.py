@@ -11,9 +11,10 @@ BITMIND_API_TIMEOUT_SEC = 10          # HTTP request timeout in seconds
 BITMIND_RATE_LIMIT_DELAY_SEC = 1.0    # Minimum seconds between API calls (1 req/sec free tier)
 
 # ── Face Detection ─────────────────────────────────────────────────────────────
-FACE_CONFIDENCE_THRESHOLD = 0.5       # MediaPipe BlazeFace detection confidence
+FACE_CONFIDENCE_THRESHOLD = 0.2       # MediaPipe BlazeFace detection confidence
 BBOX_EXPAND_RATIO = 0.20              # Expand bounding box by 20% on all sides
 ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if exceeded
+DETECTION_UPSCALE = 2.0               # Upscale factor applied to frame before BlazeFace (helps small faces)
 
 # ── Face Crop Preparation ──────────────────────────────────────────────────────
 FACE_CROP_JPEG_QUALITY = 85           # JPEG quality for API submission (0-100)

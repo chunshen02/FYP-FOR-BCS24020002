@@ -35,7 +35,7 @@ _FRAME_INTERVAL = 1.0 / _DISPLAY_FPS
 class _FaceTracker:
     """Assigns stable IDs to faces across frames using bbox centre proximity."""
 
-    _MAX_DIST = 80  # pixels; faces whose centres move ≤ this are the same person
+    _MAX_DIST = 50  # pixels; faces whose centres move ≤ this are the same person
 
     def __init__(self):
         self._tracks: dict = {}   # face_id -> (cx, cy)
@@ -100,6 +100,8 @@ class DetectionWorker(QThread):
         self._cached_results: dict = {}  # face_id -> FaceResult
         self._excl_lock = threading.Lock()
         self._excl_rect: tuple | None = None  # (x, y, w, h) physical pixels
+        self._focus_lock = threading.Lock()
+        self._focus_rect: tuple | None = None  # (x, y, w, h) frame pixels
 
     def run(self):
         self._running = True
@@ -135,7 +137,51 @@ class DetectionWorker(QThread):
 
                 frame = capture.read()
                 detection_frame = self._mask_exclusion(frame)
-                face_crops = detector.detect(detection_frame)
+
+                with self._focus_lock:
+                    focus_rect = self._focus_rect
+                if focus_rect is not None:
+                    fx, fy, fw, fh = focus_rect
+                    hf, wf = detection_frame.shape[:2]
+                    x1, y1 = max(0, fx), max(0, fy)
+                    x2, y2 = min(wf, fx + fw), min(hf, fy + fh)
+                    if x2 > x1 and y2 > y1:
+                        detection_frame = detection_frame[y1:y2, x1:x2]
+                        fox, foy = x1, y1
+                    else:
+                        fox, foy = 0, 0
+                else:
+                    fox, foy = 0, 0
+
+                scale = config.DETECTION_UPSCALE
+                if scale != 1.0:
+                    h, w = detection_frame.shape[:2]
+                    scaled_frame = cv2.resize(
+                        detection_frame,
+                        (int(w * scale), int(h * scale)),
+                        interpolation=cv2.INTER_CUBIC,
+                    )
+                    raw_crops = detector.detect(scaled_frame)
+                    face_crops = [
+                        (crop, {
+                            "x": int(b["x"] / scale) + fox,
+                            "y": int(b["y"] / scale) + foy,
+                            "w": int(b["w"] / scale),
+                            "h": int(b["h"] / scale),
+                        })
+                        for crop, b in raw_crops
+                    ]
+                else:
+                    face_crops = [
+                        (crop, {
+                            "x": b["x"] + fox,
+                            "y": b["y"] + foy,
+                            "w": b["w"],
+                            "h": b["h"],
+                        })
+                        for crop, b in detector.detect(detection_frame)
+                    ]
+
                 bboxes = [b for _, b in face_crops]
                 face_ids = tracker.update(bboxes)
 
@@ -219,6 +265,11 @@ class DetectionWorker(QThread):
         """Set a screen region (x, y, w, h) in physical pixels to blank before detection."""
         with self._excl_lock:
             self._excl_rect = rect
+
+    def set_focus_region(self, rect: tuple | None):
+        """Restrict detection to a frame-pixel (x, y, w, h) sub-region, or None for full frame."""
+        with self._focus_lock:
+            self._focus_rect = rect
 
     def _mask_exclusion(self, frame: np.ndarray) -> np.ndarray:
         """Return frame with the exclusion region zeroed out, or the original if unset."""

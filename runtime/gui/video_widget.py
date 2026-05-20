@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSlot
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal, pyqtSlot
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
@@ -36,7 +36,10 @@ class VideoWidget(QWidget):
     - Adds confidence badges below each box
     - Shows LIVE indicator in top-left corner
     - Scales frames to fit widget maintaining aspect ratio
+    - Drag left-click to set a detection zone; right-click to clear
     """
+
+    region_selected = pyqtSignal(object)  # emits (x, y, w, h) in frame pixels, or None
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,6 +57,11 @@ class VideoWidget(QWidget):
         self._blink_timer = QTimer(self)
         self._blink_timer.timeout.connect(self._toggle_blink)
         self._blink_timer.start(500)
+
+        self._sel_start: QPoint | None = None
+        self._sel_end: QPoint | None = None
+        self._sel_rect: tuple | None = None
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     @pyqtSlot(object, object)
     def update_frame(self, frame: np.ndarray, results: list):
@@ -79,6 +87,87 @@ class VideoWidget(QWidget):
     def grab_screenshot(self) -> QPixmap | None:
         """Return a QPixmap of the current frame, or None if no frame is active."""
         return self._current_pixmap
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._current_pixmap is not None:
+            self._sel_start = event.position().toPoint()
+            self._sel_end = event.position().toPoint()
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.clear_selection()
+
+    def mouseMoveEvent(self, event):
+        if self._sel_start is not None:
+            self._sel_end = event.position().toPoint()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._sel_start is not None:
+            self._sel_end = event.position().toPoint()
+            self._commit_selection()
+            self._sel_start = None
+
+    def _commit_selection(self):
+        if self._display_size[0] == 0 or self._frame_size[0] == 0:
+            self._sel_start = None
+            return
+        ox, oy = self._offset
+        dw, dh = self._display_size
+        wx1 = max(ox, min(self._sel_start.x(), self._sel_end.x()))
+        wy1 = max(oy, min(self._sel_start.y(), self._sel_end.y()))
+        wx2 = min(ox + dw, max(self._sel_start.x(), self._sel_end.x()))
+        wy2 = min(oy + dh, max(self._sel_start.y(), self._sel_end.y()))
+        if wx2 - wx1 < 10 or wy2 - wy1 < 10:
+            return
+        sx = self._frame_size[0] / self._display_size[0]
+        sy = self._frame_size[1] / self._display_size[1]
+        self._sel_rect = (
+            int((wx1 - ox) * sx),
+            int((wy1 - oy) * sy),
+            int((wx2 - wx1) * sx),
+            int((wy2 - wy1) * sy),
+        )
+        self.region_selected.emit(self._sel_rect)
+        self.update()
+
+    def clear_selection(self):
+        """Clear the detection zone selection."""
+        self._sel_rect = None
+        self._sel_start = None
+        self._sel_end = None
+        self.region_selected.emit(None)
+        self.update()
+
+    @property
+    def selection_rect(self) -> tuple | None:
+        return self._sel_rect
+
+    def _draw_selection_zone(self, painter: QPainter):
+        """Draw the active or in-progress detection zone rectangle."""
+        pen = QPen(QColor("#4A9FEF"), 2, Qt.PenStyle.DashLine)
+        fill = QColor(74, 159, 239, 30)
+
+        if self._sel_start is not None and self._sel_end is not None:
+            rect = QRect(self._sel_start, self._sel_end).normalized()
+            painter.setPen(pen)
+            painter.setBrush(QBrush(fill))
+            painter.drawRect(rect)
+            return
+
+        if self._sel_rect is not None and self._display_size[0] > 0:
+            fx, fy, fw, fh = self._sel_rect
+            sx = self._display_size[0] / self._frame_size[0]
+            sy = self._display_size[1] / self._frame_size[1]
+            wx = int(fx * sx) + self._offset[0]
+            wy = int(fy * sy) + self._offset[1]
+            ww = int(fw * sx)
+            wh = int(fh * sy)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(fill))
+            painter.drawRect(wx, wy, ww, wh)
+            font = QFont("Segoe UI", 9)
+            painter.setFont(font)
+            painter.setPen(QColor("#4A9FEF"))
+            painter.drawText(wx + 4, wy - 4, "Detection Zone")
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -110,6 +199,7 @@ class VideoWidget(QWidget):
 
         painter.drawPixmap(x_offset, y_offset, scaled_pixmap)
         self._draw_overlays(painter)
+        self._draw_selection_zone(painter)
         self._draw_live_indicator(painter)
         painter.end()
 
@@ -144,12 +234,14 @@ class VideoWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
 
-            # Badge text — use smoothed score for display
+            # Badge text — label matches risk level, score uses smoothed value
             confidence = result.p_fake_display * 100
-            if result.p_fake_display >= config.WARNING_THRESHOLD:
+            if result.risk_level == "RED":
                 badge_text = f"Deepfake {confidence:.1f}%"
+            elif result.risk_level == "AMBER":
+                badge_text = f"Suspicious {confidence:.1f}%"
             else:
-                badge_text = f"Real {(1 - result.p_fake_display) * 100:.1f}%"
+                badge_text = f"Real {100 - confidence:.1f}%"
 
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20

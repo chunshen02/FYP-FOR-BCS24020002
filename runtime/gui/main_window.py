@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         
         # LEFT PANEL: Video Feed + Controls
         left_panel = self._build_left_panel()
+        self._video_widget.region_selected.connect(self._on_region_selected)
         top_splitter.addWidget(left_panel)
         top_splitter.setStretchFactor(0, 60)
 
@@ -159,6 +160,15 @@ class MainWindow(QMainWindow):
         self._btn_screenshot.setFixedHeight(32)
         self._btn_screenshot.clicked.connect(self._on_screenshot)
         control_bar.addWidget(self._btn_screenshot)
+
+        # Clear Zone button — enabled only when a detection zone is active
+        self._btn_clear_zone = QPushButton("✕ Clear Zone")
+        self._btn_clear_zone.setObjectName("btn_clear_zone")
+        self._btn_clear_zone.setFixedHeight(32)
+        self._btn_clear_zone.setEnabled(False)
+        self._btn_clear_zone.setToolTip("Drag on the video to set a detection zone. Right-click to clear.")
+        self._btn_clear_zone.clicked.connect(self._on_clear_zone)
+        control_bar.addWidget(self._btn_clear_zone)
 
         control_bar.addStretch()
 
@@ -565,6 +575,8 @@ class MainWindow(QMainWindow):
         # Detection worker
         self._detection_worker = DetectionWorker()
         self._detection_worker.set_exclusion_region(self._window_screen_rect())
+        if self._video_widget.selection_rect is not None:
+            self._detection_worker.set_focus_region(self._video_widget.selection_rect)
         self._detection_worker.frame_ready.connect(
             self._video_widget.update_frame
         )
@@ -824,6 +836,25 @@ QPushButton#btn_screenshot:pressed {
     background-color: #444444;
 }
 
+QPushButton#btn_clear_zone {
+    background-color: #2d2d2d;
+    border: 1px solid #4A9FEF;
+    color: #4A9FEF;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+}
+
+QPushButton#btn_clear_zone:disabled {
+    background-color: #2d2d2d;
+    border: 1px solid #444444;
+    color: #555555;
+}
+
+QPushButton#btn_clear_zone:hover {
+    background-color: #3a3a3a;
+}
+
 QPushButton#btn_acknowledge {
     background-color: #FAC775;
     border: 1px solid #BA7517;
@@ -910,6 +941,18 @@ QTextEdit#session_log {
     padding: 4px;
 }
 """
+
+    # -- Detection zone -------------------------------------------------------
+
+    @pyqtSlot(object)
+    def _on_region_selected(self, rect):
+        if self._detection_worker is not None:
+            self._detection_worker.set_focus_region(rect)
+        self._btn_clear_zone.setEnabled(rect is not None)
+
+    @pyqtSlot()
+    def _on_clear_zone(self):
+        self._video_widget.clear_selection()
 
     # -- Window geometry exclusion --------------------------------------------
 
