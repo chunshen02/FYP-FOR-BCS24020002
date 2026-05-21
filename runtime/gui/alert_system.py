@@ -39,7 +39,7 @@ class AlertOverlay(QWidget):
 
             notification.notify(
                 title="Deepfake Detected",
-                message=f"Suspicious face detected. Confidence: {peak_p_fake:.1%}",
+                message=f"Deepfake face detected. Confidence: {peak_p_fake:.1%}",
                 app_name="Deepfake Detector",
                 timeout=5,
             )

@@ -20,9 +20,8 @@ import config
 
 # Risk-level colour palette (box, badge background, badge text)
 _RISK_COLOURS = {
-    "GREEN": (QColor("#1D9E75"), QColor("#E1F5EE"), QColor("#085041")),
-    "AMBER": (QColor("#EF9F27"), QColor("#FAEEDA"), QColor("#412402")),
-    "RED":   (QColor("#E24B4A"), QColor("#FCEBEB"), QColor("#791F1F")),
+    "REAL":     (QColor("#1D9E75"), QColor("#E1F5EE"), QColor("#085041")),
+    "DEEPFAKE": (QColor("#E24B4A"), QColor("#FCEBEB"), QColor("#791F1F")),
 }
 
 
@@ -32,7 +31,7 @@ class VideoWidget(QWidget):
 
     Features:
     - Displays BGR frames emitted by DetectionWorker
-    - Draws colour-coded bounding boxes (GREEN/AMBER/RED) around detected faces
+    - Draws colour-coded bounding boxes (REAL/DEEPFAKE) around detected faces
     - Adds confidence badges below each box
     - Shows LIVE indicator in top-left corner
     - Scales frames to fit widget maintaining aspect ratio
@@ -216,7 +215,7 @@ class VideoWidget(QWidget):
                 continue
 
             box_colour, badge_bg, badge_fg = _RISK_COLOURS.get(
-                result.risk_level, _RISK_COLOURS["GREEN"]
+                result.risk_level, _RISK_COLOURS["REAL"]
             )
 
             x = result.bbox["x"]
@@ -234,14 +233,9 @@ class VideoWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
 
-            # Badge text — label matches risk level, score uses smoothed value
-            confidence = result.p_fake_display * 100
-            if result.risk_level == "RED":
-                badge_text = f"Deepfake {confidence:.1f}%"
-            elif result.risk_level == "AMBER":
-                badge_text = f"Suspicious {confidence:.1f}%"
-            else:
-                badge_text = f"Real {100 - confidence:.1f}%"
+            # Always show API fake probability directly
+            p_fake_pct = result.p_fake_display * 100
+            badge_text = f"{p_fake_pct:.1f}% Deepfake"
 
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20

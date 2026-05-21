@@ -56,8 +56,8 @@ class AlertThread(QThread):
             except queue.Empty:
                 continue
 
-            # Determine if any face in this frame is RED
-            is_red_frame = any(r.risk_level == "RED" for r in results)
+            # Determine if any face in this frame is DEEPFAKE
+            is_red_frame = any(r.risk_level == "DEEPFAKE" for r in results)
             peak_p_fake = max((r.p_fake_raw for r in results), default=0.0)
 
             if not self._alert_active:

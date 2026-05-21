@@ -79,9 +79,8 @@ class DetectionWorker(QThread):
     """
 
     _OVERLAY_COLOURS = {
-        "GREEN": (0, 255, 0),
-        "AMBER": (0, 165, 255),
-        "RED":   (0, 0, 255),
+        "REAL":     (0, 255, 0),
+        "DEEPFAKE": (0, 0, 255),
     }
 
     frame_ready = pyqtSignal(object, object)
@@ -297,7 +296,7 @@ class DetectionWorker(QThread):
         self._region = region
 
     def _draw_overlays(self, frame: np.ndarray, results: list) -> np.ndarray:
-        """Draw bounding boxes and confidence score labels. GREEN < 0.5 | AMBER 0.5–0.7 | RED >= 0.7"""
+        """Draw bounding boxes and confidence score labels. REAL < 0.7 | DEEPFAKE >= 0.7"""
         for i, result in enumerate(results):
             colour = self._OVERLAY_COLOURS.get(result.risk_level, (255, 255, 255))
             b = result.bbox
@@ -307,8 +306,7 @@ class DetectionWorker(QThread):
 
             elapsed = time.perf_counter() - result.last_updated
             age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
-            label = (f"Fake: {result.p_fake_display:.2%} "
-                     f"[{result.risk_level}] "
+            label = (f"{result.p_fake_display:.1%} Deepfake "
                      f"(updated {age_str})")
             label_y = max(y1 - 8, 20)
             cv2.putText(frame, label, (x1, label_y),

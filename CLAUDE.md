@@ -73,11 +73,10 @@ benchmark.py                     # Standalone pipeline performance benchmark
 ## Key Configuration (config.py)
 
 - `BITMIND_API_KEY` — loaded from `.env` file (never hardcode)
-- `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → RED alert
-- `WARNING_THRESHOLD = 0.50` — P_fake ≥ 0.50 → AMBER warning
+- `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → DEEPFAKE; below → REAL
 - `EMA_ALPHA = 0.3` — smoothing factor for display score
-- `ALERT_TRIGGER_FRAMES = 2` — consecutive RED frames to trigger alert
-- `ALERT_DISMISS_FRAMES = 5` — consecutive non-RED frames to auto-dismiss
+- `ALERT_TRIGGER_FRAMES = 2` — consecutive DEEPFAKE frames to trigger alert
+- `ALERT_DISMISS_FRAMES = 5` — consecutive non-DEEPFAKE frames to auto-dismiss
 
 ## API Setup
 

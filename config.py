@@ -21,8 +21,7 @@ FACE_CROP_JPEG_QUALITY = 85           # JPEG quality for API submission (0-100)
 FACE_CROP_SIZE = 224                  # Resize face crop to this square size before API submission
 
 # ── Inference & Scoring ────────────────────────────────────────────────────────
-FAKE_THRESHOLD = 0.70                 # P_fake >= 0.70 triggers RED alert
-WARNING_THRESHOLD = 0.50              # P_fake >= 0.50 triggers AMBER warning
+FAKE_THRESHOLD = 0.70                 # P_fake >= 0.70 → DEEPFAKE; below → REAL
 EMA_ALPHA = 0.2                       # Exponential moving average smoothing factor
                                       # Smoothed score used for display only.
                                       # Raw score used for alert triggering.

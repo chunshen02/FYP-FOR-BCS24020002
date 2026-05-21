@@ -32,19 +32,14 @@ class FaceResult:
     """Holds inference results for a single detected face."""
     p_fake_raw: float        # Raw P_fake from API — used for alert triggering
     p_fake_display: float    # EMA-smoothed P_fake — used for visual overlay
-    risk_level: str          # "GREEN", "AMBER", or "RED"
+    risk_level: str          # "REAL" or "DEEPFAKE"
     api_response_ms: float   # Round-trip API response time in milliseconds
     bbox: dict               # {"x", "y", "w", "h"} in frame pixels
     last_updated: float = 0.0  # time.perf_counter() at last API call
 
 
 def _get_risk_level(p_fake: float) -> str:
-    if p_fake >= config.FAKE_THRESHOLD:
-        return "RED"
-    elif p_fake >= config.WARNING_THRESHOLD:
-        return "AMBER"
-    else:
-        return "GREEN"
+    return "DEEPFAKE" if p_fake >= config.FAKE_THRESHOLD else "REAL"
 
 
 class DeepfakeInferenceEngine:
