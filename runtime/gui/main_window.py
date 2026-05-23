@@ -692,8 +692,8 @@ class MainWindow(QMainWindow):
         # Update confidence based on worst result
         if results:
             worst = max(results, key=lambda r: r.p_fake_raw)
-            # Use smoothed score for the visual bar; raw score for alert logic
-            display_confidence = worst.p_fake_display * 100
+            # Use raw score for accuracy — real-time API response
+            display_confidence = worst.p_fake_raw * 100
             self._confidence_bar.setValue(int(display_confidence))
             self._confidence_label.setText(f"{display_confidence:.1f}%")
 

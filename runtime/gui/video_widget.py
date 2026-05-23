@@ -233,8 +233,8 @@ class VideoWidget(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
 
-            # Always show API fake probability directly
-            p_fake_pct = result.p_fake_display * 100
+            # Always show raw API fake probability directly
+            p_fake_pct = result.p_fake_raw * 100
             badge_text = f"{p_fake_pct:.1f}% Deepfake"
 
             badge_y = scaled_y + scaled_h + 4

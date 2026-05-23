@@ -45,5 +45,11 @@ Thumbs.db
 # Runtime outputs (screenshots saved by the app)
 screenshots/
 
+# Accuracy test — extracted dataset frames (not project code)
+test_samples/
+
+# Claude Code local settings
+.claude/settings.local.json
+
 # Jupyter
 .ipynb_checkpoints/
