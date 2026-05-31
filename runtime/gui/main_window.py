@@ -37,7 +37,7 @@ from runtime.gui.session_log import SessionLog
 from runtime.gui.dialogs import SaveSessionDialog
 from runtime.threads.detection_worker import DetectionWorker
 from runtime.threads.alert_thread import AlertThread
-from runtime.storage.database import log_event as db_log_event, get_all_sessions
+from runtime.storage.database import log_event as db_log_event, get_all_sessions, delete_session, clear_history
 import config
 
 
@@ -104,7 +104,30 @@ class MainWindow(QMainWindow):
         history_layout = QVBoxLayout(self._history_section)
         history_layout.setContentsMargins(0, 0, 0, 0)
         history_layout.setSpacing(0)
+
+        # Header row: title + delete buttons
+        history_header = QHBoxLayout()
+        history_header.setContentsMargins(8, 8, 8, 4)
+        history_header.setSpacing(8)
+        history_title = QLabel("Session History")
+        history_title.setStyleSheet("color: #888; font-size: 11px;")
+        history_header.addWidget(history_title)
+        history_header.addStretch()
+        self._btn_delete_session = QPushButton("Delete Selected")
+        self._btn_delete_session.setObjectName("btn_delete_session")
+        self._btn_delete_session.setFixedHeight(24)
+        self._btn_delete_session.setEnabled(False)
+        self._btn_delete_session.clicked.connect(self._on_delete_selected_session)
+        history_header.addWidget(self._btn_delete_session)
+        self._btn_clear_history = QPushButton("Clear All")
+        self._btn_clear_history.setObjectName("btn_clear_history")
+        self._btn_clear_history.setFixedHeight(24)
+        self._btn_clear_history.clicked.connect(self._on_clear_all_sessions)
+        history_header.addWidget(self._btn_clear_history)
+        history_layout.addLayout(history_header)
+
         self._history_table = self._build_history_table()
+        self._history_table.itemSelectionChanged.connect(self._on_history_selection_changed)
         history_layout.addWidget(self._history_table)
         root_layout.addWidget(self._history_section, stretch=0)
 
@@ -519,6 +542,24 @@ class MainWindow(QMainWindow):
             layout.setContentsMargins(4, 2, 4, 2)
             self._history_table.setCellWidget(row, 3, container)
 
+    @pyqtSlot()
+    def _on_history_selection_changed(self):
+        self._btn_delete_session.setEnabled(self._history_table.currentRow() >= 0)
+
+    @pyqtSlot()
+    def _on_delete_selected_session(self):
+        row = self._history_table.currentRow()
+        if row < 0:
+            return
+        started_at = self._history_table.item(row, 0).text()
+        delete_session(started_at)
+        self.refresh_history()
+
+    @pyqtSlot()
+    def _on_clear_all_sessions(self):
+        clear_history()
+        self.refresh_history()
+
     # -- Detection Control -----------------------------------------------------
 
     def _set_status(self, state: str):
@@ -915,6 +956,36 @@ QHeaderView::section {
     border: none;
     border-bottom: 1px solid #333333;
     padding: 4px 8px;
+}
+
+QPushButton#btn_delete_session {
+    background-color: #2d2d2d;
+    border: 1px solid #E24B4A;
+    color: #E24B4A;
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 11px;
+}
+QPushButton#btn_delete_session:disabled {
+    border-color: #444444;
+    color: #555555;
+}
+QPushButton#btn_delete_session:hover {
+    background-color: #3a2020;
+}
+
+QPushButton#btn_clear_history {
+    background-color: #2d2d2d;
+    border: 1px solid #555555;
+    color: #999999;
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-size: 11px;
+}
+QPushButton#btn_clear_history:hover {
+    background-color: #3a2020;
+    border-color: #E24B4A;
+    color: #E24B4A;
 }
 
 /* Status Bar */

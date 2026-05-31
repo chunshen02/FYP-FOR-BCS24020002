@@ -111,8 +111,36 @@ def get_session_history(limit: int = 100) -> list:
         return []
 
 
+def delete_session(started_at: str) -> None:
+    """Delete all events belonging to the session that started at the given timestamp."""
+    try:
+        conn = _get_connection()
+        cursor = conn.execute(
+            "SELECT id FROM session_events WHERE event_type='SESSION' AND detail LIKE '%Detection started%' AND timestamp=? ORDER BY id ASC LIMIT 1",
+            (started_at,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            conn.close()
+            return
+        start_id = row[0]
+        cursor = conn.execute(
+            "SELECT id FROM session_events WHERE event_type='SESSION' AND detail LIKE '%Detection stopped%' AND id > ? ORDER BY id ASC LIMIT 1",
+            (start_id,)
+        )
+        row = cursor.fetchone()
+        if row is not None:
+            conn.execute("DELETE FROM session_events WHERE id BETWEEN ? AND ?", (start_id, row[0]))
+        else:
+            conn.execute("DELETE FROM session_events WHERE id >= ?", (start_id,))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"[WARNING] Database delete failed: {e}")
+
+
 def clear_history() -> None:
-    """Delete all session event records. Used for testing only."""
+    """Delete all session event records."""
     try:
         conn = _get_connection()
         conn.execute("DELETE FROM session_events")
