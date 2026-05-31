@@ -5,6 +5,7 @@ Main application window matching the redesigned wireframe.
 Wires all GUI components and background threads.
 """
 
+import threading
 from datetime import timedelta, datetime
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -37,6 +38,8 @@ from runtime.gui.session_log import SessionLog
 from runtime.gui.dialogs import SaveSessionDialog
 from runtime.threads.detection_worker import DetectionWorker
 from runtime.threads.alert_thread import AlertThread
+from runtime.detection.face_detector import FaceDetector
+from runtime.detection.inference import DeepfakeInferenceEngine
 from runtime.storage.database import log_event as db_log_event, get_all_sessions, delete_session, clear_history
 import config
 
@@ -63,12 +66,19 @@ class MainWindow(QMainWindow):
         self._alert_count = 0
         self._status_state = "Idle"
 
+        # Shared heavy components — initialised once in background, reused across sessions
+        self._shared_detector: FaceDetector = None
+        self._shared_engine: DeepfakeInferenceEngine = None
+
         # Session timer
         self._session_timer = QTimer()
         self._session_timer.timeout.connect(self._tick_session_duration)
 
         self._build_ui()
         self.refresh_history()
+
+        # Pre-init MediaPipe and HTTP session while the user is reading the UI
+        threading.Thread(target=self._preinit_components, daemon=True).start()
 
     # -- UI Construction -------------------------------------------------------
 
@@ -467,6 +477,16 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(QLabel(" · "))
         status_bar.addPermanentWidget(lbl_threshold)
 
+    def _preinit_components(self):
+        """Load MediaPipe model and open HTTP session once at startup."""
+        try:
+            detector = FaceDetector()
+            engine = DeepfakeInferenceEngine()
+            self._shared_detector = detector
+            self._shared_engine = engine
+        except Exception:
+            pass  # Worker falls back to creating its own and surfaces any API key error
+
     def refresh_history(self):
         """Reload session history from database and update table visibility."""
         sessions = get_all_sessions(limit=100)
@@ -613,8 +633,11 @@ class MainWindow(QMainWindow):
         # Start session timer
         self._session_timer.start(1000)
 
-        # Detection worker
-        self._detection_worker = DetectionWorker()
+        # Detection worker — reuse pre-initialised components to avoid per-session reload
+        self._detection_worker = DetectionWorker(
+            face_detector=self._shared_detector,
+            engine=self._shared_engine,
+        )
         self._detection_worker.set_exclusion_region(self._window_screen_rect())
         if self._video_widget.selection_rect is not None:
             self._detection_worker.set_focus_region(self._video_widget.selection_rect)
@@ -1056,4 +1079,8 @@ QTextEdit#session_log {
         """Ensure threads are stopped cleanly on window close."""
         self._session_timer.stop()
         self._on_stop()
+        if self._shared_detector:
+            self._shared_detector.close()
+        if self._shared_engine:
+            self._shared_engine.close()
         event.accept()
