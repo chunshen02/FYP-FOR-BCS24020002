@@ -136,6 +136,7 @@ class DetectionWorker(QThread):
 
                 frame = capture.read()
                 detection_frame = self._mask_exclusion(frame)
+                display_frame = detection_frame  # full masked frame; rebinding detection_frame below won't affect this
 
                 with self._focus_lock:
                     focus_rect = self._focus_rect
@@ -206,7 +207,7 @@ class DetectionWorker(QThread):
                         if fid in self._cached_results
                     ]
 
-                annotated_frame = self._draw_overlays(frame.copy(), results)
+                annotated_frame = self._draw_overlays(display_frame.copy(), results)
                 self.frame_ready.emit(annotated_frame, results)
 
                 frame_count += 1
