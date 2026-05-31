@@ -5,7 +5,6 @@ Captures the desktop screen using mss and returns BGR numpy frames.
 """
 
 import numpy as np
-import cv2
 import mss
 import mss.tools
 
@@ -46,10 +45,8 @@ class ScreenCapture:
             raise RuntimeError("ScreenCapture not started. Call start() first.")
 
         screenshot = self._sct.grab(self._region)
-        # mss returns BGRA; convert to BGR
-        frame = np.array(screenshot)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        return frame
+        # mss returns BGRA; drop the alpha channel by slicing — far cheaper than cvtColor
+        return np.asarray(screenshot)[:, :, :3]
 
     def set_region(self, left: int, top: int, width: int, height: int):
         """Update the capture region at runtime."""

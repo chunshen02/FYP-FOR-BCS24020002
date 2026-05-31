@@ -3,14 +3,15 @@ detection_worker.py
 
 QThread that runs the real-time detection pipeline continuously.
 Pipeline: Screen Capture → Face Detection → JPEG Preprocessing → BitMind API
-Emits annotated frames and FaceResult lists to the GUI thread.
+Emits raw frames + FaceResult lists + pending bboxes to the GUI thread.
 
 Architecture:
-  Main loop   — capture + face detection at ~15 FPS; uses cached API results.
+  Main loop   — capture + face detection at the configured display rate;
+                uses cached API results.
   API thread  — processes one face per second (rate limit), round-robin across
                 all currently visible faces so every participant gets updated.
-  _FaceTracker — assigns stable IDs to faces across frames so per-face EMA
-                and result caching remain consistent even as faces reorder.
+  _FaceTracker — assigns stable IDs to faces across frames so result caching
+                remains consistent even as faces reorder.
 """
 
 import threading
@@ -28,8 +29,7 @@ from runtime.detection.preprocessor import Preprocessor
 from runtime.detection.inference import DeepfakeInferenceEngine
 import config
 
-_DISPLAY_FPS = 15
-_FRAME_INTERVAL = 1.0 / _DISPLAY_FPS
+_FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
 
 
 class _FaceTracker:
@@ -72,18 +72,14 @@ class DetectionWorker(QThread):
     Runs the full deepfake detection pipeline in a background thread.
 
     Signals:
-        frame_ready(np.ndarray, list): Annotated BGR frame + list of FaceResult.
+        frame_ready(np.ndarray, list, list): BGR frame, list of FaceResult,
+            list of pending bboxes (faces detected but not yet analyzed by API).
         fps_update(float): Current processing FPS.
         api_response_update(float): Most recent BitMind API response time (ms).
         error_occurred(str): Error message if the pipeline crashes.
     """
 
-    _OVERLAY_COLOURS = {
-        "REAL":     (0, 255, 0),
-        "DEEPFAKE": (0, 0, 255),
-    }
-
-    frame_ready = pyqtSignal(object, object)
+    frame_ready = pyqtSignal(object, object, object)
     fps_update = pyqtSignal(float)
     api_response_update = pyqtSignal(float)
     error_occurred = pyqtSignal(str)
@@ -146,8 +142,8 @@ class DetectionWorker(QThread):
                 t_frame_start = time.perf_counter()
 
                 frame = capture.read()
-                detection_frame = self._mask_exclusion(frame)
-                display_frame = detection_frame  # full masked frame; rebinding detection_frame below won't affect this
+                display_frame = self._mask_exclusion(frame)  # mask only for display (prevents mirror effect)
+                detection_frame = frame  # detect on the unmasked frame so faces overlapping the app window aren't lost
 
                 with self._focus_lock:
                     focus_rect = self._focus_rect
@@ -193,33 +189,48 @@ class DetectionWorker(QThread):
                         for crop, b in detector.detect(detection_frame)
                     ]
 
+                with self._excl_lock:
+                    excl = self._excl_rect
+                if excl is not None and face_crops:
+                    ex, ey, ew, eh = excl
+                    face_crops = [
+                        (crop, b) for (crop, b) in face_crops
+                        if not (ex <= b["x"] + b["w"] // 2 < ex + ew
+                                and ey <= b["y"] + b["h"] // 2 < ey + eh)
+                    ]
+
                 bboxes = [b for _, b in face_crops]
                 face_ids = tracker.update(bboxes)
 
+                active_ids = set(face_ids)
                 if face_crops:
-                    # Update pending crops for the API thread (one entry per face)
                     with self._pending_lock:
                         for (crop, bbox), fid in zip(face_crops, face_ids):
                             self._pending_faces[fid] = (
                                 preprocessor.process(crop), bbox
                             )
-                    engine.evict_stale_ema(set(face_ids))
+                        # Drop pending entries for faces no longer detected
+                        for stale in [k for k in self._pending_faces if k not in active_ids]:
+                            del self._pending_faces[stale]
+                    with self._result_lock:
+                        for stale in [k for k in self._cached_results if k not in active_ids]:
+                            del self._cached_results[stale]
                 else:
                     with self._pending_lock:
                         self._pending_faces.clear()
                     with self._result_lock:
                         self._cached_results.clear()
 
-                # Build ordered result list matching currently detected faces
                 with self._result_lock:
-                    results = [
-                        self._cached_results[fid]
-                        for fid in face_ids
-                        if fid in self._cached_results
-                    ]
+                    results = []
+                    pending_bboxes = []
+                    for fid, bbox in zip(face_ids, bboxes):
+                        if fid in self._cached_results:
+                            results.append(self._cached_results[fid])
+                        else:
+                            pending_bboxes.append(bbox)
 
-                annotated_frame = self._draw_overlays(display_frame.copy(), results)
-                self.frame_ready.emit(annotated_frame, results)
+                self.frame_ready.emit(display_frame, results, pending_bboxes)
 
                 frame_count += 1
                 if frame_count % 30 == 0:
@@ -238,7 +249,6 @@ class DetectionWorker(QThread):
         finally:
             self._running = False
             api_thread.join(timeout=3)
-            engine.reset_ema()
             if owned_engine:
                 engine.close()
             if owned_detector:
@@ -308,22 +318,3 @@ class DetectionWorker(QThread):
     def set_region(self, region: dict):
         """Update capture region (takes effect on next start)."""
         self._region = region
-
-    def _draw_overlays(self, frame: np.ndarray, results: list) -> np.ndarray:
-        """Draw bounding boxes and confidence score labels. REAL < 0.7 | DEEPFAKE >= 0.7"""
-        for i, result in enumerate(results):
-            colour = self._OVERLAY_COLOURS.get(result.risk_level, (255, 255, 255))
-            b = result.bbox
-            x1, y1 = b["x"], b["y"]
-            x2, y2 = x1 + b["w"], y1 + b["h"]
-            cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-
-            elapsed = time.perf_counter() - result.last_updated
-            age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
-            label = (f"{result.p_fake_display:.1%} Deepfake "
-                     f"(updated {age_str})")
-            label_y = max(y1 - 8, 20)
-            cv2.putText(frame, label, (x1, label_y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                        colour, 2, cv2.LINE_AA)
-        return frame

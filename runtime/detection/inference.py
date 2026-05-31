@@ -2,7 +2,7 @@
 inference.py
 
 Submits JPEG face crop bytes to the BitMind API and returns
-raw and EMA-smoothed fake confidence scores.
+the raw fake confidence score.
 
 BitMind API:
     Endpoint : https://api.bitmind.ai/detect-image
@@ -23,15 +23,13 @@ from dotenv import load_dotenv
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
 
-# Load API key from .env file at project root
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 
 @dataclass
 class FaceResult:
     """Holds inference results for a single detected face."""
-    p_fake_raw: float        # Raw P_fake from API — used for alert triggering
-    p_fake_display: float    # EMA-smoothed P_fake — used for visual overlay
+    p_fake_raw: float        # Raw P_fake from API — used for alert triggering and display
     risk_level: str          # "REAL" or "DEEPFAKE"
     api_response_ms: float   # Round-trip API response time in milliseconds
     bbox: dict               # {"x", "y", "w", "h"} in frame pixels
@@ -43,10 +41,7 @@ def _get_risk_level(p_fake: float) -> str:
 
 
 class DeepfakeInferenceEngine:
-    """
-    Submits face crop images to the BitMind API for deepfake classification.
-    Maintains per-face EMA state for smoothed display scores.
-    """
+    """Submits face crop images to the BitMind API for deepfake classification."""
 
     def __init__(self):
         self._api_key = os.environ.get("BITMIND_API_KEY", "")
@@ -58,34 +53,18 @@ class DeepfakeInferenceEngine:
 
         self._session = requests.Session()
         self._session.headers.update({"Authorization": f"Bearer {self._api_key}"})
-        self._ema_state: dict = {}   # face_id -> smoothed score
         self._last_call_time: float = 0.0
 
     def run_single(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
-        """
-        Submit one face crop to the BitMind API and return its result.
-
-        Maintains per-face EMA state keyed by face_id so scores remain
-        stable across frames regardless of detection order.
-        """
+        """Submit one face crop to the BitMind API and return its result."""
         p_fake_raw, api_ms = self._call_api(jpeg_bytes)
-        prev_ema = self._ema_state.get(face_id, 0.0)
-        p_fake_display = (config.EMA_ALPHA * p_fake_raw
-                          + (1 - config.EMA_ALPHA) * prev_ema)
-        self._ema_state[face_id] = p_fake_display
         return FaceResult(
             p_fake_raw=p_fake_raw,
-            p_fake_display=p_fake_display,
             risk_level=_get_risk_level(p_fake_raw),
             api_response_ms=api_ms,
             bbox=bbox,
             last_updated=time.perf_counter(),
         )
-
-    def evict_stale_ema(self, active_ids: set):
-        """Remove EMA entries for face IDs no longer visible."""
-        self._ema_state = {k: v for k, v in self._ema_state.items()
-                           if k in active_ids}
 
     def _call_api(self, jpeg_bytes: bytes) -> tuple:
         """
@@ -96,7 +75,6 @@ class DeepfakeInferenceEngine:
         Returns:
             (p_fake_raw: float, api_response_ms: float)
         """
-        # Rate limiting: enforce minimum gap between calls
         now = time.perf_counter()
         elapsed = now - self._last_call_time
         if elapsed < config.BITMIND_RATE_LIMIT_DELAY_SEC:
@@ -134,10 +112,6 @@ class DeepfakeInferenceEngine:
             self._last_call_time = time.perf_counter()
             print(f"[WARNING] BitMind API request failed: {e}")
             return 0.0, api_ms
-
-    def reset_ema(self):
-        """Reset EMA state. Call when detection is stopped and restarted."""
-        self._ema_state = {}
 
     def close(self):
         """Close the underlying HTTP session."""

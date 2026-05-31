@@ -7,6 +7,7 @@ bounding box overlays, face badges, and LIVE indicator.
 
 import os
 import sys
+import time
 import numpy as np
 import cv2
 from PyQt6.QtWidgets import QWidget
@@ -23,6 +24,9 @@ _RISK_COLOURS = {
     "REAL":     (QColor("#1D9E75"), QColor("#E1F5EE"), QColor("#085041")),
     "DEEPFAKE": (QColor("#E24B4A"), QColor("#FCEBEB"), QColor("#791F1F")),
 }
+_PENDING_COLOUR = QColor("#888888")
+_PENDING_BADGE_BG = QColor("#2a2a2a")
+_PENDING_BADGE_FG = QColor("#cccccc")
 
 
 class VideoWidget(QWidget):
@@ -48,6 +52,7 @@ class VideoWidget(QWidget):
 
         self._current_pixmap = None
         self._current_results = []
+        self._current_pending_bboxes = []
         self._frame_size = (0, 0)
         self._display_size = (0, 0)
         self._offset = (0, 0)
@@ -62,9 +67,9 @@ class VideoWidget(QWidget):
         self._sel_rect: tuple | None = None
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-    @pyqtSlot(object, object)
-    def update_frame(self, frame: np.ndarray, results: list):
-        """Update the displayed frame and detection results."""
+    @pyqtSlot(object, object, object)
+    def update_frame(self, frame: np.ndarray, results: list, pending_bboxes: list = None):
+        """Update the displayed frame, analyzed results, and pending placeholders."""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_frame.shape
         self._frame_size = (w, h)
@@ -75,12 +80,14 @@ class VideoWidget(QWidget):
         )
         self._current_pixmap = QPixmap.fromImage(qt_image)
         self._current_results = results
+        self._current_pending_bboxes = pending_bboxes or []
         self.update()
 
     def clear(self):
         """Clear the displayed frame."""
         self._current_pixmap = None
         self._current_results = []
+        self._current_pending_bboxes = []
         self.update()
 
     def grab_screenshot(self) -> QPixmap | None:
@@ -203,12 +210,15 @@ class VideoWidget(QWidget):
         painter.end()
 
     def _draw_overlays(self, painter: QPainter):
-        """Draw colour-coded bounding boxes and confidence badges for detected faces."""
-        if not self._current_results or self._frame_size[0] == 0:
+        """Draw colour-coded bounding boxes, confidence badges, and pending placeholders."""
+        if self._frame_size[0] == 0:
+            return
+        if not self._current_results and not self._current_pending_bboxes:
             return
 
         scale_x = self._display_size[0] / self._frame_size[0]
         scale_y = self._display_size[1] / self._frame_size[1]
+        now = time.perf_counter()
 
         for result in self._current_results:
             if not result.bbox:
@@ -228,14 +238,14 @@ class VideoWidget(QWidget):
             scaled_w = int(w * scale_x)
             scaled_h = int(h * scale_y)
 
-            # Bounding box
             painter.setPen(QPen(box_colour, 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
 
-            # Always show raw API fake probability directly
             p_fake_pct = result.p_fake_raw * 100
-            badge_text = f"{p_fake_pct:.1f}% Deepfake"
+            elapsed = now - result.last_updated
+            age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
+            badge_text = f"{p_fake_pct:.1f}% Deepfake · {age_str}"
 
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20
@@ -249,6 +259,38 @@ class VideoWidget(QWidget):
             font.setBold(True)
             painter.setFont(font)
             painter.setPen(badge_fg)
+            painter.drawText(
+                scaled_x + 4, badge_y, badge_w - 8, badge_h,
+                Qt.AlignmentFlag.AlignCenter,
+                badge_text
+            )
+
+        for bbox in self._current_pending_bboxes:
+            if not bbox:
+                continue
+            scaled_x = int(bbox["x"] * scale_x) + self._offset[0]
+            scaled_y = int(bbox["y"] * scale_y) + self._offset[1]
+            scaled_w = int(bbox["w"] * scale_x)
+            scaled_h = int(bbox["h"] * scale_y)
+
+            pen = QPen(_PENDING_COLOUR, 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
+
+            badge_text = "Analyzing..."
+            badge_y = scaled_y + scaled_h + 4
+            badge_h = 20
+            badge_w = self._text_width(badge_text, 10) + 10
+
+            painter.setBrush(QBrush(_PENDING_BADGE_BG))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 3, 3)
+
+            font = QFont("Segoe UI", 10)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(_PENDING_BADGE_FG)
             painter.drawText(
                 scaled_x + 4, badge_y, badge_w - 8, badge_h,
                 Qt.AlignmentFlag.AlignCenter,

@@ -102,8 +102,6 @@ def run_benchmark_pass(pass_number: int) -> dict:
             if elapsed >= config.BENCHMARK_WARMUP_SECONDS - 1:
                 print("  Measurement started...")
 
-    if engine:
-        engine.reset_ema()
     detector.close()
     capture.stop()
 

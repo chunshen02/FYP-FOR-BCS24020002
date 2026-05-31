@@ -656,7 +656,7 @@ class MainWindow(QMainWindow):
 
         # Wire detection results to alert thread
         self._detection_worker.frame_ready.connect(
-            lambda frame, results: self._alert_thread.push_results(results)
+            lambda frame, results, pending: self._alert_thread.push_results(results)
         )
 
         self._alert_thread.start()
@@ -740,8 +740,8 @@ class MainWindow(QMainWindow):
 
     # -- Frame & Result Handling -----------------------------------------------
 
-    @pyqtSlot(object, object)
-    def _on_frame_ready(self, frame: np.ndarray, results: list):
+    @pyqtSlot(object, object, object)
+    def _on_frame_ready(self, frame: np.ndarray, results: list, pending_bboxes: list):
         """Handle incoming frame and detection results."""
         self._frame_count += 1
         self._frames_value.setText(f"{self._frame_count:,}")

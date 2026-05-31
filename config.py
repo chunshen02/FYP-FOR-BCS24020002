@@ -30,6 +30,9 @@ EMA_ALPHA = 0.2                       # Exponential moving average smoothing fac
 ALERT_TRIGGER_FRAMES = 3              # Consecutive RED frames required to trigger alert
 ALERT_DISMISS_FRAMES = 8              # Consecutive non-RED frames required to dismiss alert
 
+# ── Display / Loop Rate ────────────────────────────────────────────────────────
+DISPLAY_FPS = 15                      # Detection loop tick rate (frames/sec)
+
 # ── Performance Targets ────────────────────────────────────────────────────────
 TARGET_FPS = 10                       # Minimum acceptable throughput (frames/sec)
 TARGET_LATENCY_MS = 100               # Maximum end-to-end latency (ms)
