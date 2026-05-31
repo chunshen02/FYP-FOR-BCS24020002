@@ -136,7 +136,7 @@ class DetectionWorker(QThread):
 
                 frame = capture.read()
                 detection_frame = self._mask_exclusion(frame)
-                display_frame = detection_frame  # full masked frame; rebinding detection_frame below won't affect this
+                display_frame = self._fill_exclusion_display(frame)  # gradient-filled for display; detection uses zeroed frame
 
                 with self._focus_lock:
                     focus_rect = self._focus_rect
@@ -287,6 +287,38 @@ class DetectionWorker(QThread):
         masked = frame.copy()
         masked[y1:y2, x1:x2] = 0
         return masked
+
+    def _fill_exclusion_display(self, frame: np.ndarray) -> np.ndarray:
+        """Return a copy of frame with the exclusion region blended from its 4 border edges."""
+        with self._excl_lock:
+            excl = self._excl_rect
+        if excl is None:
+            return frame
+        x, y, w, h = excl
+        fh, fw = frame.shape[:2]
+        y1, y2 = max(0, y), min(fh, y + h)
+        x1, x2 = max(0, x), min(fw, x + w)
+        if y2 <= y1 or x2 <= x1:
+            return frame
+
+        rh, rw = y2 - y1, x2 - x1
+
+        left_col  = frame[y1:y2, max(0, x1 - 1)].astype(np.float32)       # (rh, 3)
+        right_col = frame[y1:y2, min(fw - 1, x2)].astype(np.float32)      # (rh, 3)
+        top_row   = frame[max(0, y1 - 1), x1:x2].astype(np.float32)       # (rw, 3)
+        bot_row   = frame[min(fh - 1, y2), x1:x2].astype(np.float32)      # (rw, 3)
+
+        t_h = np.linspace(0.0, 1.0, rw, dtype=np.float32)
+        horiz = (left_col[:, np.newaxis, :] * (1.0 - t_h)[np.newaxis, :, np.newaxis]
+               + right_col[:, np.newaxis, :] * t_h[np.newaxis, :, np.newaxis])
+
+        t_v = np.linspace(0.0, 1.0, rh, dtype=np.float32)
+        vert = (top_row[np.newaxis, :, :] * (1.0 - t_v)[:, np.newaxis, np.newaxis]
+              + bot_row[np.newaxis, :, :] * t_v[:, np.newaxis, np.newaxis])
+
+        result = frame.copy()
+        result[y1:y2, x1:x2] = np.clip((horiz + vert) * 0.5, 0, 255).astype(np.uint8)
+        return result
 
     def stop(self):
         """Signal the detection loop to stop cleanly."""
