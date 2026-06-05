@@ -88,8 +88,9 @@ class DeepfakeInferenceEngine:
                 json={"image": f"data:image/jpeg;base64,{b64}"},
                 timeout=config.BITMIND_API_TIMEOUT_SEC
             )
-            api_ms = (time.perf_counter() - t_start) * 1000
-            self._last_call_time = time.perf_counter()
+            t_end = time.perf_counter()
+            api_ms = (t_end - t_start) * 1000
+            self._last_call_time = t_end
 
             if response.status_code == 200:
                 data = response.json()
@@ -102,14 +103,16 @@ class DeepfakeInferenceEngine:
                 return 0.0, api_ms
 
         except requests.exceptions.Timeout:
-            api_ms = (time.perf_counter() - t_start) * 1000
-            self._last_call_time = time.perf_counter()
+            t_end = time.perf_counter()
+            api_ms = (t_end - t_start) * 1000
+            self._last_call_time = t_end
             print(f"[WARNING] BitMind API request timed out after {config.BITMIND_API_TIMEOUT_SEC}s")
             return 0.0, api_ms
 
         except requests.exceptions.RequestException as e:
-            api_ms = (time.perf_counter() - t_start) * 1000
-            self._last_call_time = time.perf_counter()
+            t_end = time.perf_counter()
+            api_ms = (t_end - t_start) * 1000
+            self._last_call_time = t_end
             print(f"[WARNING] BitMind API request failed: {e}")
             return 0.0, api_ms
 

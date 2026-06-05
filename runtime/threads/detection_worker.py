@@ -83,6 +83,8 @@ class DetectionWorker(QThread):
     fps_update = pyqtSignal(float)
     api_response_update = pyqtSignal(float)
     error_occurred = pyqtSignal(str)
+    low_light_warning = pyqtSignal(bool)
+    face_count_update = pyqtSignal(int, int)   # (shown, total_detected)
 
     def __init__(self, region: dict = None, face_detector=None, engine=None, parent=None):
         super().__init__(parent)
@@ -145,6 +147,11 @@ class DetectionWorker(QThread):
                 display_frame = self._mask_exclusion(frame)  # mask only for display (prevents mirror effect)
                 detection_frame = frame  # detect on the unmasked frame so faces overlapping the app window aren't lost
 
+                # Emit low-light warning based on a cheap downsampled brightness check.
+                thumb = cv2.resize(display_frame, (64, 36))
+                gray_mean = float(cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY).mean())
+                self.low_light_warning.emit(gray_mean < config.LOW_LIGHT_THRESHOLD)
+
                 with self._focus_lock:
                     focus_rect = self._focus_rect
                 if focus_rect is not None:
@@ -199,6 +206,14 @@ class DetectionWorker(QThread):
                                 and ey <= b["y"] + b["h"] // 2 < ey + eh)
                     ]
 
+                # Cap to MAX_FACES largest faces so API load stays bounded.
+                total_detected = len(face_crops)
+                if len(face_crops) > config.MAX_FACES:
+                    face_crops = sorted(
+                        face_crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True
+                    )[:config.MAX_FACES]
+                self.face_count_update.emit(len(face_crops), total_detected)
+
                 bboxes = [b for _, b in face_crops]
                 face_ids = tracker.update(bboxes)
 
@@ -209,12 +224,13 @@ class DetectionWorker(QThread):
                             self._pending_faces[fid] = (
                                 preprocessor.process(crop), bbox
                             )
-                        # Drop pending entries for faces no longer detected
-                        for stale in [k for k in self._pending_faces if k not in active_ids]:
-                            del self._pending_faces[stale]
+                        self._pending_faces = {
+                            k: v for k, v in self._pending_faces.items() if k in active_ids
+                        }
                     with self._result_lock:
-                        for stale in [k for k in self._cached_results if k not in active_ids]:
-                            del self._cached_results[stale]
+                        self._cached_results = {
+                            k: v for k, v in self._cached_results.items() if k in active_ids
+                        }
                 else:
                     with self._pending_lock:
                         self._pending_faces.clear()

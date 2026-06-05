@@ -157,6 +157,14 @@ class MainWindow(QMainWindow):
         self._video_widget.setMinimumHeight(300)
         left_layout.addWidget(self._video_widget, stretch=1)
 
+        # Low-light warning bar (hidden until triggered)
+        self._low_light_bar = QLabel("  Low light detected — detection accuracy may be reduced")
+        self._low_light_bar.setStyleSheet(
+            "background-color: #5C3500; color: #FFCC66; font-size: 11px; padding: 3px 8px;"
+        )
+        self._low_light_bar.setVisible(False)
+        left_layout.addWidget(self._low_light_bar)
+
         # Control bar
         control_bar = self._build_control_bar()
         left_layout.addLayout(control_bar)
@@ -648,6 +656,8 @@ class MainWindow(QMainWindow):
         self._detection_worker.fps_update.connect(self._on_fps_update)
         self._detection_worker.api_response_update.connect(self._on_api_response_update)
         self._detection_worker.error_occurred.connect(self._on_error)
+        self._detection_worker.low_light_warning.connect(self._on_low_light_warning)
+        self._detection_worker.face_count_update.connect(self._on_face_count_update)
 
         # Alert thread
         self._alert_thread = AlertThread()
@@ -686,6 +696,7 @@ class MainWindow(QMainWindow):
 
         self._btn_start.setEnabled(True)
         self._alert_card.setVisible(False)
+        self._low_light_bar.setVisible(False)
         self._video_widget.clear()
         self._lbl_api_ms.setText("API: — ms")
 
@@ -750,9 +761,6 @@ class MainWindow(QMainWindow):
         if self._status_state == "Initializing":
             self._set_status("Detecting")
 
-        # Update face count readout
-        self._faces_label.setText(str(len(results) if results else 0))
-
         # Update confidence based on worst result
         if results:
             worst = max(results, key=lambda r: r.p_fake_raw)
@@ -775,6 +783,25 @@ class MainWindow(QMainWindow):
     @pyqtSlot(float)
     def _on_api_response_update(self, api_ms: float):
         self._lbl_api_ms.setText(f"API: {api_ms:.0f} ms")
+
+    @pyqtSlot(bool)
+    def _on_low_light_warning(self, is_low_light: bool):
+        if self._low_light_bar.isVisible() != is_low_light:
+            self._low_light_bar.setVisible(is_low_light)
+
+    @pyqtSlot(int, int)
+    def _on_face_count_update(self, shown: int, total: int):
+        if shown == 0:
+            self._faces_label.setText("—")
+            self._faces_label.setToolTip("")
+        elif total > shown:
+            self._faces_label.setText(f"{shown}/{total}")
+            self._faces_label.setToolTip(
+                f"Analyzing {shown} of {total} detected faces (max {config.MAX_FACES})"
+            )
+        else:
+            self._faces_label.setText(str(shown))
+            self._faces_label.setToolTip("")
 
     @pyqtSlot(float)
     def _on_alert_triggered(self, peak_p_fake: float):

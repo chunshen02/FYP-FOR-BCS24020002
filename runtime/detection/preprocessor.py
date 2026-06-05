@@ -21,6 +21,12 @@ class Preprocessor:
     The resulting JPEG decodes to correct RGB on the server side.
     """
 
+    def __init__(self):
+        self._gamma_lut = np.array(
+            [min(255, int((i / 255.0) ** config.LOW_LIGHT_GAMMA * 255)) for i in range(256)],
+            dtype=np.uint8,
+        )
+
     def process(self, face_bgr: np.ndarray) -> bytes:
         """
         Convert a BGR face crop to JPEG bytes.
@@ -33,6 +39,9 @@ class Preprocessor:
         """
         size = config.FACE_CROP_SIZE
         resized = cv2.resize(face_bgr, (size, size), interpolation=cv2.INTER_CUBIC)
+        if cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).mean() < config.LOW_LIGHT_THRESHOLD:
+            # Gamma correction brightens dark crops so the API receives a cleaner image.
+            resized = cv2.LUT(resized, self._gamma_lut)
         _, buf = cv2.imencode(
             '.jpg', resized,
             [cv2.IMWRITE_JPEG_QUALITY, config.FACE_CROP_JPEG_QUALITY]

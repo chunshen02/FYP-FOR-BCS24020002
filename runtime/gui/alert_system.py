@@ -8,6 +8,11 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import pyqtSlot
 import sys
 
+try:
+    from plyer import notification as _plyer_notification
+except Exception:
+    _plyer_notification = None
+
 
 class AlertOverlay(QWidget):
     """
@@ -34,10 +39,10 @@ class AlertOverlay(QWidget):
         self._target.setStyleSheet(self.NORMAL_STYLE)
 
     def _send_toast(self, peak_p_fake: float):
+        if _plyer_notification is None:
+            return
         try:
-            from plyer import notification
-
-            notification.notify(
+            _plyer_notification.notify(
                 title="Deepfake Detected",
                 message=f"Deepfake face detected. Confidence: {peak_p_fake:.1%}",
                 app_name="Deepfake Detector",

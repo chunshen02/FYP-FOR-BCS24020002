@@ -71,6 +71,7 @@ class FaceDetector:
             min_detection_confidence=config.FACE_CONFIDENCE_THRESHOLD,
         )
         self._detector = mp_vision.FaceDetector.create_from_options(options)
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
     def detect(self, frame_bgr: np.ndarray) -> list:
         """
@@ -85,7 +86,15 @@ class FaceDetector:
             Returns an empty list if no faces are detected.
         """
         h, w = frame_bgr.shape[:2]
-        rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
+        # CLAHE on the L channel improves face detection in low-light conditions.
+        # Crops are still taken from the original frame to preserve image fidelity for the API.
+        lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+        l_ch, a_ch, b_ch = cv2.split(lab)
+        detection_bgr = cv2.cvtColor(
+            cv2.merge([self._clahe.apply(l_ch), a_ch, b_ch]), cv2.COLOR_LAB2BGR
+        )
+        rgb_frame = cv2.cvtColor(detection_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
         results = self._detector.detect(mp_image)
 

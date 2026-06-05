@@ -28,6 +28,13 @@ _PENDING_COLOUR = QColor("#888888")
 _PENDING_BADGE_BG = QColor("#2a2a2a")
 _PENDING_BADGE_FG = QColor("#cccccc")
 
+_BADGE_FONT = QFont("Segoe UI", 10)
+_BADGE_FONT.setBold(True)
+_BADGE_METRICS = QFontMetrics(_BADGE_FONT)
+
+_LIVE_FONT = QFont("Segoe UI", 11)
+_LIVE_FONT.setBold(True)
+
 
 class VideoWidget(QWidget):
     """
@@ -56,6 +63,8 @@ class VideoWidget(QWidget):
         self._frame_size = (0, 0)
         self._display_size = (0, 0)
         self._offset = (0, 0)
+        self._cached_scaled_pixmap = None
+        self._cached_widget_size = None
 
         self._blink_on = True
         self._blink_timer = QTimer(self)
@@ -79,6 +88,7 @@ class VideoWidget(QWidget):
             rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
         )
         self._current_pixmap = QPixmap.fromImage(qt_image)
+        self._cached_scaled_pixmap = None  # invalidate on new frame
         self._current_results = results
         self._current_pending_bboxes = pending_bboxes or []
         self.update()
@@ -86,6 +96,7 @@ class VideoWidget(QWidget):
     def clear(self):
         """Clear the displayed frame."""
         self._current_pixmap = None
+        self._cached_scaled_pixmap = None
         self._current_results = []
         self._current_pending_bboxes = []
         self.update()
@@ -192,11 +203,15 @@ class VideoWidget(QWidget):
             return
 
         widget_size = self.size()
-        scaled_pixmap = self._current_pixmap.scaled(
-            widget_size,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+        current_w_size = (widget_size.width(), widget_size.height())
+        if self._cached_scaled_pixmap is None or self._cached_widget_size != current_w_size:
+            self._cached_scaled_pixmap = self._current_pixmap.scaled(
+                widget_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._cached_widget_size = current_w_size
+        scaled_pixmap = self._cached_scaled_pixmap
 
         x_offset = (widget_size.width() - scaled_pixmap.width()) // 2
         y_offset = (widget_size.height() - scaled_pixmap.height()) // 2
@@ -249,15 +264,13 @@ class VideoWidget(QWidget):
 
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20
-            badge_w = self._text_width(badge_text, 10, bold=True) + 10
+            badge_w = _BADGE_METRICS.horizontalAdvance(badge_text) + 10
 
             painter.setBrush(QBrush(badge_bg))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 3, 3)
 
-            font = QFont("Segoe UI", 10)
-            font.setBold(True)
-            painter.setFont(font)
+            painter.setFont(_BADGE_FONT)
             painter.setPen(badge_fg)
             painter.drawText(
                 scaled_x + 4, badge_y, badge_w - 8, badge_h,
@@ -281,15 +294,13 @@ class VideoWidget(QWidget):
             badge_text = "Analyzing..."
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20
-            badge_w = self._text_width(badge_text, 10, bold=True) + 10
+            badge_w = _BADGE_METRICS.horizontalAdvance(badge_text) + 10
 
             painter.setBrush(QBrush(_PENDING_BADGE_BG))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 3, 3)
 
-            font = QFont("Segoe UI", 10)
-            font.setBold(True)
-            painter.setFont(font)
+            painter.setFont(_BADGE_FONT)
             painter.setPen(_PENDING_BADGE_FG)
             painter.drawText(
                 scaled_x + 4, badge_y, badge_w - 8, badge_h,
@@ -313,9 +324,7 @@ class VideoWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(circle_x, circle_y, circle_size, circle_size)
 
-        font = QFont("Segoe UI", 11)
-        font.setBold(True)
-        painter.setFont(font)
+        painter.setFont(_LIVE_FONT)
         painter.setPen(QColor(255, 255, 255, 200))
         painter.drawText(
             circle_x + 16, circle_y, 200, circle_size,
@@ -323,9 +332,3 @@ class VideoWidget(QWidget):
             "DETECTING"
         )
 
-    @staticmethod
-    def _text_width(text: str, font_size: int, bold: bool = False) -> int:
-        font = QFont("Segoe UI", font_size)
-        font.setBold(bold)
-        metrics = QFontMetrics(font)
-        return metrics.horizontalAdvance(text)

@@ -15,6 +15,7 @@ FACE_CONFIDENCE_THRESHOLD = 0.2       # MediaPipe BlazeFace detection confidence
 BBOX_EXPAND_RATIO = 0.20              # Expand bounding box by 20% on all sides
 ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if exceeded
 DETECTION_UPSCALE = 2.0               # Upscale factor applied to frame before BlazeFace (helps small faces)
+MAX_FACES = 3                         # Analyze at most this many faces per frame (largest first)
 
 # ── Face Crop Preparation ──────────────────────────────────────────────────────
 FACE_CROP_JPEG_QUALITY = 85           # JPEG quality for API submission (0-100)
@@ -43,3 +44,7 @@ TARGET_RAM_MB = 800                   # Maximum peak RAM usage (MB)
 BENCHMARK_WARMUP_SECONDS = 30
 BENCHMARK_MEASURE_SECONDS = 60
 BENCHMARK_REPEAT = 3
+
+# ── Low-Light Handling ────────────────────────────────────────────────────────
+LOW_LIGHT_THRESHOLD = 40              # Frame mean brightness (0-255) below which low-light mode activates
+LOW_LIGHT_GAMMA = 0.5                 # Gamma exponent applied to dark face crops before API submission
