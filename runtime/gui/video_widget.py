@@ -249,7 +249,7 @@ class VideoWidget(QWidget):
 
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20
-            badge_w = self._text_width(badge_text, 10) + 10
+            badge_w = self._text_width(badge_text, 10, bold=True) + 10
 
             painter.setBrush(QBrush(badge_bg))
             painter.setPen(Qt.PenStyle.NoPen)
@@ -281,7 +281,7 @@ class VideoWidget(QWidget):
             badge_text = "Analyzing..."
             badge_y = scaled_y + scaled_h + 4
             badge_h = 20
-            badge_w = self._text_width(badge_text, 10) + 10
+            badge_w = self._text_width(badge_text, 10, bold=True) + 10
 
             painter.setBrush(QBrush(_PENDING_BADGE_BG))
             painter.setPen(Qt.PenStyle.NoPen)
@@ -324,7 +324,8 @@ class VideoWidget(QWidget):
         )
 
     @staticmethod
-    def _text_width(text: str, font_size: int) -> int:
+    def _text_width(text: str, font_size: int, bold: bool = False) -> int:
         font = QFont("Segoe UI", font_size)
+        font.setBold(bold)
         metrics = QFontMetrics(font)
         return metrics.horizontalAdvance(text)
