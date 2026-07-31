@@ -48,3 +48,15 @@ BENCHMARK_REPEAT = 3
 # ── Low-Light Handling ────────────────────────────────────────────────────────
 LOW_LIGHT_THRESHOLD = 40              # Frame mean brightness (0-255) below which low-light mode activates
 LOW_LIGHT_GAMMA = 0.5                 # Gamma exponent applied to dark face crops before API submission
+
+# ── Local Explainability (CV Heuristics) ────────────────────────────────────────
+# Thresholds calibrated against test_samples/ (10 real + 10 deepfake crops).
+# Note: on that small sample, none of the three metrics separated real from
+# deepfake — set instead to flag statistical outliers relative to the observed
+# range of ordinary face crops (roughly pooled mean + 2 std), so they surface
+# genuinely unusual crops rather than firing on every face. Treat as
+# corroborating, best-effort evidence, not a calibrated classifier.
+EXPLANATION_ENABLED = True             # Run local CV artifact heuristics on DEEPFAKE-classified faces
+EXPLAIN_FFT_HF_RATIO_THRESHOLD = 0.0004  # High/low FFT energy ratio above which spectral anomaly is flagged
+EXPLAIN_NOISE_RATIO_THRESHOLD = 2.6      # Inner/border noise-residual variance ratio above which blending is flagged
+EXPLAIN_ASYMMETRY_THRESHOLD = 0.20       # Normalized left-right pixel-diff mean above which asymmetry is flagged

@@ -27,6 +27,15 @@ class Preprocessor:
             dtype=np.uint8,
         )
 
+    def _prepare(self, face_bgr: np.ndarray) -> np.ndarray:
+        """Resize and gamma-correct a BGR face crop to FACE_CROP_SIZE."""
+        size = config.FACE_CROP_SIZE
+        resized = cv2.resize(face_bgr, (size, size), interpolation=cv2.INTER_CUBIC)
+        if cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).mean() < config.LOW_LIGHT_THRESHOLD:
+            # Gamma correction brightens dark crops so the API receives a cleaner image.
+            resized = cv2.LUT(resized, self._gamma_lut)
+        return resized
+
     def process(self, face_bgr: np.ndarray) -> bytes:
         """
         Convert a BGR face crop to JPEG bytes.
@@ -37,13 +46,26 @@ class Preprocessor:
         Returns:
             JPEG-encoded bytes of the face crop.
         """
-        size = config.FACE_CROP_SIZE
-        resized = cv2.resize(face_bgr, (size, size), interpolation=cv2.INTER_CUBIC)
-        if cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).mean() < config.LOW_LIGHT_THRESHOLD:
-            # Gamma correction brightens dark crops so the API receives a cleaner image.
-            resized = cv2.LUT(resized, self._gamma_lut)
+        resized = self._prepare(face_bgr)
         _, buf = cv2.imencode(
             '.jpg', resized,
             [cv2.IMWRITE_JPEG_QUALITY, config.FACE_CROP_JPEG_QUALITY]
         )
         return buf.tobytes()
+
+    def process_with_array(self, face_bgr: np.ndarray) -> tuple:
+        """
+        Convert a BGR face crop to JPEG bytes, also returning the pre-encode
+        BGR array for local artifact analysis (avoids re-decoding the JPEG,
+        which would contaminate frequency/noise measurements with compression
+        artifacts).
+
+        Returns:
+            (jpeg_bytes, resized_bgr)
+        """
+        resized = self._prepare(face_bgr)
+        _, buf = cv2.imencode(
+            '.jpg', resized,
+            [cv2.IMWRITE_JPEG_QUALITY, config.FACE_CROP_JPEG_QUALITY]
+        )
+        return buf.tobytes(), resized

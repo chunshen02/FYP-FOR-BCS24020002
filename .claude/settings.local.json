@@ -44,7 +44,32 @@
       "Bash(python -c \"from runtime.gui.main_window import MainWindow\")",
       "Bash(python -m py_compile runtime/gui/overlay_widget.py)",
       "Bash(python -c \"from runtime.gui.overlay_widget import OverlayWidget; from runtime.gui.main_window import MainWindow\")",
-      "Bash(Get-ChildItem *)"
+      "Bash(Get-ChildItem *)",
+      "Bash(python -m py_compile config.py runtime/detection/inference.py runtime/gui/video_widget.py runtime/threads/detection_worker.py runtime/threads/alert_thread.py)",
+      "Bash(python -m py_compile runtime/gui/alert_system.py runtime/gui/video_widget.py)",
+      "Bash(python -m py_compile runtime/gui/video_widget.py runtime/threads/detection_worker.py)",
+      "Bash(Test-Path *)",
+      "PowerShell(cd \"C:\\\\Users\\\\User\\\\Downloads\\\\FYP\\\\FYP CODING\\\\deepfake_detector\"; $env:BITMIND_API_KEY = \"\"; python benchmark.py 2>&1)",
+      "PowerShell(New-Item *)",
+      "PowerShell(cd \"C:\\\\Users\\\\User\\\\Downloads\\\\FYP\\\\FYP CODING\\\\deepfake_detector\"; python accuracy_test.py 2>&1 | Where-Object { $_ -notmatch \"^\\(INFO|W0000|E0000|=== Source\\)\" })",
+      "PowerShell(cd \"C:\\\\Users\\\\User\\\\Downloads\\\\FYP\\\\FYP CODING\\\\deepfake_detector\"; python accuracy_test.py 2>&1 | Where-Object { $_ -notmatch \"^\\(INFO|W0000|E0000|===|wireless\\)\" })",
+      "Read(//mnt/c/Users/User/Downloads/FYP/FYP CODING/**)",
+      "Bash(python3 -c \"import numpy as np; fps=[19.5,18.9,12.3]; print\\(f'Mean FPS: {np.mean\\(fps\\):.1f} \\(file says 16.9\\)'\\)\")",
+      "Bash(python3 -c \"import numpy as np; lat=[50.4,51.9,80.1]; print\\(f'Mean Latency: {np.mean\\(lat\\):.1f} ms \\(file says 60.8\\)'\\)\")",
+      "Bash(python3 -c \"import numpy as np; cpu=[18.6,20.0,29.1]; print\\(f'Mean CPU: {np.mean\\(cpu\\):.1f}% \\(file says 22.6\\)'\\)\")",
+      "Bash(python3 -c \"import numpy as np; api=[1552,1511,2260]; print\\(f'Mean API: {np.mean\\(api\\):.0f} ms \\(file says 1774\\)'\\)\")",
+      "Bash(python -m py_compile runtime/storage/database.py)",
+      "Bash(python -c \"from runtime.storage.database import log_event, delete_session, clear_history, get_all_sessions; print\\('OK'\\)\")",
+      "Bash(python -c \"from runtime.threads.detection_worker import DetectionWorker; print\\('OK'\\)\")",
+      "Bash(python -c \"import main; print\\('OK'\\)\")",
+      "Bash(python -m py_compile \"C:\\\\Users\\\\User\\\\Downloads\\\\FYP\\\\FYP CODING\\\\deepfake_detector\\\\runtime\\\\threads\\\\detection_worker.py\")",
+      "Bash(python -m py_compile main.py config.py runtime/capture/screen_capture.py runtime/detection/face_detector.py runtime/detection/preprocessor.py runtime/detection/inference.py runtime/threads/detection_worker.py runtime/threads/alert_thread.py runtime/storage/database.py runtime/gui/main_window.py runtime/gui/video_widget.py runtime/gui/session_log.py runtime/gui/dialogs.py runtime/gui/alert_system.py)",
+      "Bash(python -c \"from runtime.gui.video_widget import VideoWidget\")",
+      "Bash(python -m py_compile benchmark.py)",
+      "Bash(python -c \"import benchmark\")",
+      "Bash(timeout 6 python -c ' *)",
+      "Bash(Get-Content *)",
+      "PowerShell(python -m py_compile \"C:\\\\Users\\\\User\\\\Downloads\\\\FYP\\\\FYP CODING\\\\deepfake_detector\\\\runtime\\\\gui\\\\main_window.py\"; Write-Host \"OK\")"
     ]
   }
 }

@@ -17,7 +17,7 @@ import os
 import sys
 import time
 import requests
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -34,6 +34,7 @@ class FaceResult:
     api_response_ms: float   # Round-trip API response time in milliseconds
     bbox: dict               # {"x", "y", "w", "h"} in frame pixels
     last_updated: float = 0.0  # time.perf_counter() at last API call
+    explanation: list = field(default_factory=list)  # local CV evidence strings, populated only for DEEPFAKE
 
 
 def _get_risk_level(p_fake: float) -> str:

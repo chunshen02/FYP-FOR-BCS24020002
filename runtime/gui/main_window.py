@@ -342,6 +342,15 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
+        # Explanation text (why this face was flagged). Single-line + elided:
+        # the sidebar's fixed-height layout can't grow to fit wrapped
+        # multi-sentence text without clipping, so the full text goes in the
+        # tooltip and session log instead (see _show_alert).
+        self._alert_reason_label = QLabel("")
+        self._alert_reason_label.setWordWrap(False)
+        self._alert_reason_label.setStyleSheet("color: #633806; font-size: 11px;")
+        layout.addWidget(self._alert_reason_label)
+
         # Acknowledge button
         self._btn_acknowledge = QPushButton("Acknowledge alert")
         self._btn_acknowledge.setObjectName("btn_acknowledge")
@@ -624,6 +633,7 @@ class MainWindow(QMainWindow):
 
         # Hide alert card
         self._alert_card.setVisible(False)
+        self._alert_reason_label.setText("")
 
         # Reset confidence
         self._confidence_bar.setValue(0)
@@ -770,7 +780,7 @@ class MainWindow(QMainWindow):
             self._confidence_label.setText(f"{display_confidence:.1f}%")
 
             if worst.p_fake_raw >= config.FAKE_THRESHOLD and not self._current_alert_active:
-                self._show_alert()
+                self._show_alert(worst.explanation)
         else:
             self._confidence_bar.setValue(0)
             self._confidence_label.setText("—")
@@ -803,20 +813,15 @@ class MainWindow(QMainWindow):
             self._faces_label.setText(str(shown))
             self._faces_label.setToolTip("")
 
-    @pyqtSlot(float)
-    def _on_alert_triggered(self, peak_p_fake: float):
+    @pyqtSlot(float, list)
+    def _on_alert_triggered(self, peak_p_fake: float, explanation: list):
         """Handle alert trigger from alert thread."""
         if not self._current_alert_active:
-            self._show_alert()
-        self._session_log_event(
-            "ALERT",
-            f"Deepfake detected. Peak confidence: {peak_p_fake:.1%}"
-        )
-        db_log_event(
-            "ALERT",
-            f"Deepfake detected. Peak confidence: {peak_p_fake:.1%}",
-            peak_confidence=peak_p_fake
-        )
+            self._show_alert(explanation)
+        reason_suffix = f" Reasons: {'; '.join(explanation)}" if explanation else ""
+        detail = f"Deepfake detected. Peak confidence: {peak_p_fake:.1%}{reason_suffix}"
+        self._session_log_event("ALERT", detail)
+        db_log_event("ALERT", detail, peak_confidence=peak_p_fake)
 
     @pyqtSlot()
     def _on_alert_dismissed(self):
@@ -835,10 +840,29 @@ class MainWindow(QMainWindow):
         db_log_event("ERROR", error_msg)
         self._on_stop()
 
-    def _show_alert(self):
+    def _show_alert(self, explanation: list = None):
         """Show alert card and reflect the Alert state."""
         if not self._current_alert_active:
             self._alert_count += 1
+        reasons = explanation or []
+        text = " · ".join(reasons) if reasons else (
+            "No local visual artifacts detected by heuristic analysis — "
+            "this result is based on the cloud model's own assessment."
+        )
+        # Elide to fit the sidebar so the fixed-height layout never has to
+        # grow (which would clip against the button below it). Measured off
+        # the alert card's parent container rather than the label itself:
+        # the card is hidden until now, so its own width may not yet reflect
+        # the real layout-constrained size, but the always-visible parent's
+        # width is reliable. The full text is always available via tooltip
+        # and is also written to the session log / DB detail in full.
+        parent_width = self._alert_card.parentWidget().width() or 300
+        available_width = max(parent_width - 40, 150)
+        display_text = self._alert_reason_label.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, available_width
+        )
+        self._alert_reason_label.setText(display_text)
+        self._alert_reason_label.setToolTip(text)
         self._alert_card.setVisible(True)
         self._current_alert_active = True
         self._set_status("Alert")

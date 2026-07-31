@@ -27,6 +27,7 @@ from runtime.capture.screen_capture import ScreenCapture
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
 from runtime.detection.inference import DeepfakeInferenceEngine
+from runtime.detection.explainer import analyze_artifacts
 import config
 
 _FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
@@ -92,7 +93,7 @@ class DetectionWorker(QThread):
         self._running = False
         # Shared state between main loop and API thread
         self._pending_lock = threading.Lock()
-        self._pending_faces: dict = {}   # face_id -> (jpeg_bytes, bbox)
+        self._pending_faces: dict = {}   # face_id -> (jpeg_bytes, bbox, resized_bgr)
         self._result_lock = threading.Lock()
         self._cached_results: dict = {}  # face_id -> FaceResult
         self._excl_lock = threading.Lock()
@@ -221,9 +222,8 @@ class DetectionWorker(QThread):
                 if face_crops:
                     with self._pending_lock:
                         for (crop, bbox), fid in zip(face_crops, face_ids):
-                            self._pending_faces[fid] = (
-                                preprocessor.process(crop), bbox
-                            )
+                            jpeg_bytes, resized_bgr = preprocessor.process_with_array(crop)
+                            self._pending_faces[fid] = (jpeg_bytes, bbox, resized_bgr)
                         self._pending_faces = {
                             k: v for k, v in self._pending_faces.items() if k in active_ids
                         }
@@ -280,12 +280,12 @@ class DetectionWorker(QThread):
             with self._pending_lock:
                 if self._pending_faces:
                     # Take the next face in insertion order
-                    face_id, (jpeg_bytes, bbox) = next(
+                    face_id, (jpeg_bytes, bbox, resized_bgr) = next(
                         iter(self._pending_faces.items())
                     )
                     # Move it to the back so other faces get a turn next
                     del self._pending_faces[face_id]
-                    self._pending_faces[face_id] = (jpeg_bytes, bbox)
+                    self._pending_faces[face_id] = (jpeg_bytes, bbox, resized_bgr)
                 else:
                     face_id = None
 
@@ -294,6 +294,9 @@ class DetectionWorker(QThread):
                 continue
 
             result = engine.run_single(jpeg_bytes, bbox, face_id)
+
+            if result.risk_level == "DEEPFAKE" and config.EXPLANATION_ENABLED:
+                result.explanation = analyze_artifacts(resized_bgr)
 
             with self._result_lock:
                 self._cached_results[face_id] = result

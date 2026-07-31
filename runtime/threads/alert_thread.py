@@ -20,11 +20,12 @@ class AlertThread(QThread):
     Monitors incoming FaceResult lists and manages alert state.
 
     Signals:
-        alert_triggered(float): Emitted when alert fires. Carries peak P_fake.
-        alert_dismissed():      Emitted when alert is dismissed.
+        alert_triggered(float, list): Emitted when alert fires. Carries peak
+            P_fake and the triggering face's local explanation reasons.
+        alert_dismissed():            Emitted when alert is dismissed.
     """
 
-    alert_triggered = pyqtSignal(float)
+    alert_triggered = pyqtSignal(float, list)
     alert_dismissed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -58,7 +59,9 @@ class AlertThread(QThread):
 
             # Determine if any face in this frame is DEEPFAKE
             is_red_frame = any(r.risk_level == "DEEPFAKE" for r in results)
-            peak_p_fake = max((r.p_fake_raw for r in results), default=0.0)
+            peak_result = max(results, key=lambda r: r.p_fake_raw, default=None)
+            peak_p_fake = peak_result.p_fake_raw if peak_result else 0.0
+            peak_explanation = peak_result.explanation if peak_result else []
 
             if not self._alert_active:
                 if is_red_frame:
@@ -67,7 +70,7 @@ class AlertThread(QThread):
                     if self._trigger_counter >= config.ALERT_TRIGGER_FRAMES:
                         self._alert_active = True
                         self._trigger_counter = 0
-                        self.alert_triggered.emit(peak_p_fake)
+                        self.alert_triggered.emit(peak_p_fake, peak_explanation)
                 else:
                     self._trigger_counter = 0
             else:
