@@ -19,14 +19,23 @@ from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal, pyqtSlot
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
 
-# Risk-level colour palette (box, badge background, badge text)
+# Risk-level colour palette: box outline, solid pill background, pill text
 _RISK_COLOURS = {
-    "REAL":     (QColor("#1D9E75"), QColor("#E1F5EE"), QColor("#085041")),
-    "DEEPFAKE": (QColor("#E24B4A"), QColor("#FCEBEB"), QColor("#791F1F")),
+    "REAL":     (QColor("#22C55E"), QColor("#22C55E"), QColor("#052E16")),
+    "DEEPFAKE": (QColor("#EF4444"), QColor("#EF4444"), QColor("#2D0A0A")),
 }
-_PENDING_COLOUR = QColor("#888888")
-_PENDING_BADGE_BG = QColor("#2a2a2a")
-_PENDING_BADGE_FG = QColor("#cccccc")
+_PENDING_COLOUR = QColor("#6B7280")
+_PENDING_BADGE_BG = QColor("#12151C")
+_PENDING_BADGE_FG = QColor("#9CA3AF")
+
+# Badge: bold percentage on top, smaller risk label + timestamp beneath
+_BADGE_PCT_FONT = QFont("Segoe UI", 15)
+_BADGE_PCT_FONT.setBold(True)
+_BADGE_PCT_METRICS = QFontMetrics(_BADGE_PCT_FONT)
+
+_BADGE_SUB_FONT = QFont("Segoe UI", 8)
+_BADGE_SUB_FONT.setBold(True)
+_BADGE_SUB_METRICS = QFontMetrics(_BADGE_SUB_FONT)
 
 _BADGE_FONT = QFont("Segoe UI", 10)
 _BADGE_FONT.setBold(True)
@@ -255,27 +264,41 @@ class VideoWidget(QWidget):
 
             painter.setPen(QPen(box_colour, 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
+            painter.drawRoundedRect(scaled_x, scaled_y, scaled_w, scaled_h, 6, 6)
 
             p_fake_pct = result.p_fake_raw * 100
             elapsed = now - result.last_updated
             age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
-            badge_text = f"{p_fake_pct:.1f}% Deepfake · {age_str}"
+            pct_text = f"{p_fake_pct:.1f}%"
+            sub_text = f"{result.risk_level.upper()}  ·  {age_str}"
 
-            badge_y = scaled_y + scaled_h + 4
-            badge_h = 20
-            badge_w = _BADGE_METRICS.horizontalAdvance(badge_text) + 10
+            badge_w = max(
+                _BADGE_PCT_METRICS.horizontalAdvance(pct_text),
+                _BADGE_SUB_METRICS.horizontalAdvance(sub_text),
+            ) + 20
+            badge_h = 46
+            badge_y = scaled_y + scaled_h + 6
 
             painter.setBrush(QBrush(badge_bg))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 3, 3)
+            painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 10, 10)
 
-            painter.setFont(_BADGE_FONT)
+            painter.setFont(_BADGE_PCT_FONT)
             painter.setPen(badge_fg)
             painter.drawText(
-                scaled_x + 4, badge_y, badge_w - 8, badge_h,
+                scaled_x, badge_y + 3, badge_w, 24,
                 Qt.AlignmentFlag.AlignCenter,
-                badge_text
+                pct_text
+            )
+
+            painter.setFont(_BADGE_SUB_FONT)
+            fg = QColor(badge_fg)
+            fg.setAlpha(200)
+            painter.setPen(fg)
+            painter.drawText(
+                scaled_x, badge_y + 27, badge_w, 16,
+                Qt.AlignmentFlag.AlignCenter,
+                sub_text
             )
 
         for bbox in self._current_pending_bboxes:
