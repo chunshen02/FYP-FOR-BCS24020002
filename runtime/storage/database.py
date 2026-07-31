@@ -177,7 +177,14 @@ def get_all_sessions(limit: int = 100) -> list:
         cursor = conn.execute(sql, (limit * 10,))  # fetch more to reconstruct sessions
         rows = cursor.fetchall()
         conn.close()
-        
+
+        # The query above orders newest-first, but pairing a "started" event
+        # with its "stopped" event requires scanning forward in time (a stop
+        # always has a higher id than its start). Reverse to chronological
+        # (oldest-first) order before pairing, then reverse the reconstructed
+        # sessions back to newest-first for display at the end.
+        rows = list(reversed(rows))
+
         # Reconstruct sessions from event log
         sessions = []
         i = 0
