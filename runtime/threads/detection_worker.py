@@ -294,6 +294,7 @@ class DetectionWorker(QThread):
                 continue
 
             result = engine.run_single(jpeg_bytes, bbox, face_id)
+            result.thumbnail = resized_bgr  # exact crop that was analyzed, for Mini mode display
 
             if result.risk_level == "DEEPFAKE" and config.EXPLANATION_ENABLED:
                 result.explanation = analyze_artifacts(resized_bgr)

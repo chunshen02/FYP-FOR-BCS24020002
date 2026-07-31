@@ -17,6 +17,7 @@ import os
 import sys
 import time
 import requests
+import numpy as np
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
@@ -35,6 +36,7 @@ class FaceResult:
     bbox: dict               # {"x", "y", "w", "h"} in frame pixels
     last_updated: float = 0.0  # time.perf_counter() at last API call
     explanation: list = field(default_factory=list)  # local CV evidence strings, populated only for DEEPFAKE
+    thumbnail: np.ndarray = None  # the exact preprocessed BGR crop that was analyzed, for Mini mode display
 
 
 def _get_risk_level(p_fake: float) -> str:

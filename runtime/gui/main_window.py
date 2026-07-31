@@ -38,6 +38,8 @@ from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
 from runtime.gui.dialogs import SaveSessionDialog
 from runtime.gui.gauge_widget import GaugeWidget
+from runtime.gui.window_affinity import apply_capture_exclusion
+from runtime.gui.face_thumbnail import FaceThumbnail
 from runtime.threads.detection_worker import DetectionWorker
 from runtime.threads.alert_thread import AlertThread
 from runtime.detection.face_detector import FaceDetector
@@ -101,6 +103,9 @@ class MainWindow(QMainWindow):
         self._current_alert_active = False
         self._alert_count = 0
         self._status_state = "Idle"
+        self._capture_exclusion_applied = False
+        self._mini_mode = False
+        self._full_mode_geometry = None
 
         # Shared heavy components — initialised once in background, reused across sessions
         self._shared_detector: FaceDetector = None
@@ -134,15 +139,16 @@ class MainWindow(QMainWindow):
         top_splitter.setHandleWidth(14)
 
         # LEFT PANEL: Video Feed + Controls
-        left_panel = self._build_left_panel()
+        self._left_panel = self._build_left_panel()
         self._video_widget.region_selected.connect(self._on_region_selected)
-        top_splitter.addWidget(left_panel)
+        top_splitter.addWidget(self._left_panel)
         top_splitter.setStretchFactor(0, 60)
 
         # RIGHT PANEL: Info Cards
         right_panel = self._build_right_panel()
         top_splitter.addWidget(right_panel)
         top_splitter.setStretchFactor(1, 40)
+        self._top_splitter = top_splitter
 
         root_layout.addWidget(top_splitter, stretch=1)
 
@@ -267,6 +273,15 @@ class MainWindow(QMainWindow):
         self._btn_clear_zone.clicked.connect(self._on_clear_zone)
         control_bar.addWidget(self._btn_clear_zone)
 
+        # Mini mode — collapses to a small always-on-top status bar so the
+        # meeting window underneath stays visible during a call.
+        self._btn_mini_mode = QPushButton("⛶ Mini Mode")
+        self._btn_mini_mode.setObjectName("btn_clear_zone")
+        self._btn_mini_mode.setFixedHeight(32)
+        self._btn_mini_mode.setToolTip("Collapse to a small always-on-top bar so the meeting window stays visible")
+        self._btn_mini_mode.clicked.connect(self._toggle_mini_mode)
+        control_bar.addWidget(self._btn_mini_mode)
+
         control_bar.addStretch()
 
         # FPS readout
@@ -315,12 +330,104 @@ class MainWindow(QMainWindow):
 
         return control_bar
 
+    def _build_mini_bar(self) -> QWidget:
+        """Compact status + Start/Stop/Exit row, shown only in Mini mode."""
+        bar = QWidget()
+        bar.setObjectName("card")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(8)
+
+        self._mini_status_dot = QLabel("●")
+        self._mini_status_dot.setStyleSheet("color: #6B7280; font-size: 10px;")
+        layout.addWidget(self._mini_status_dot)
+
+        self._mini_status_label = QLabel("Idle")
+        self._mini_status_label.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        layout.addWidget(self._mini_status_label)
+        layout.addStretch()
+
+        # The shared #btn_start/#btn_stop/#btn_screenshot rules use
+        # padding meant for full-width buttons (e.g. "6px 16px"), which
+        # would swallow all the space in these small fixed-size buttons
+        # and hide the glyph entirely — override padding down to fit.
+        mini_btn_style = "padding: 2px;"
+
+        self._btn_mini_start = QPushButton("▶")
+        self._btn_mini_start.setObjectName("btn_start")
+        self._btn_mini_start.setFixedSize(32, 26)
+        self._btn_mini_start.setStyleSheet(mini_btn_style)
+        self._btn_mini_start.setToolTip("Start detection")
+        self._btn_mini_start.clicked.connect(self._on_start)
+        layout.addWidget(self._btn_mini_start)
+
+        self._btn_mini_stop = QPushButton("◻")
+        self._btn_mini_stop.setObjectName("btn_stop")
+        self._btn_mini_stop.setFixedSize(32, 26)
+        self._btn_mini_stop.setStyleSheet(mini_btn_style)
+        self._btn_mini_stop.setEnabled(False)
+        self._btn_mini_stop.setToolTip("Stop detection")
+        self._btn_mini_stop.clicked.connect(self._on_stop)
+        layout.addWidget(self._btn_mini_stop)
+
+        btn_exit_mini = QPushButton("⤢")
+        btn_exit_mini.setObjectName("btn_screenshot")
+        btn_exit_mini.setFixedSize(32, 26)
+        btn_exit_mini.setStyleSheet(mini_btn_style)
+        btn_exit_mini.setToolTip("Exit Mini Mode")
+        btn_exit_mini.clicked.connect(self._toggle_mini_mode)
+        layout.addWidget(btn_exit_mini)
+
+        bar.setVisible(False)
+        return bar
+
+    def _build_mini_face_strip(self) -> QWidget:
+        """
+        Card showing live, actual face-crop thumbnails (up to MAX_FACES) for
+        Mini mode — the whole point of the app is visual verification, so
+        Mini mode must let the user SEE which face a score belongs to, not
+        just an abstract percentage. Replaces the confidence gauge as the
+        primary visual in Mini mode (see _enter_mini_mode/_exit_mini_mode).
+        """
+        card = QWidget()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
+
+        title = QLabel("LIVE FACES")
+        title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+        layout.addWidget(title)
+
+        self._mini_faces_empty_label = QLabel("No face detected")
+        self._mini_faces_empty_label.setStyleSheet("color: #6B7280; font-size: 11px; font-style: italic;")
+        layout.addWidget(self._mini_faces_empty_label)
+
+        strip_layout = QHBoxLayout()
+        strip_layout.setSpacing(8)
+        self._mini_thumbnails = [FaceThumbnail(size=64) for _ in range(config.MAX_FACES)]
+        for thumb in self._mini_thumbnails:
+            strip_layout.addWidget(thumb)
+        strip_layout.addStretch()
+        layout.addLayout(strip_layout)
+
+        card.setVisible(False)
+        return card
+
     def _build_right_panel(self) -> QWidget:
         """Build right panel with info cards."""
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         right_layout.setContentsMargins(12, 0, 0, 0)
         right_layout.setSpacing(10)
+
+        # Mini Mode status/control bar (hidden unless in Mini mode)
+        self._mini_bar = self._build_mini_bar()
+        right_layout.addWidget(self._mini_bar)
+
+        # Mini Mode live face thumbnails (hidden unless in Mini mode)
+        self._mini_face_strip = self._build_mini_face_strip()
+        right_layout.addWidget(self._mini_face_strip)
 
         # Confidence Card
         self._confidence_card = self._build_confidence_card()
@@ -340,7 +447,8 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self._session_info_card)
 
         # System Log Card
-        log_card = QWidget()
+        self._log_card = QWidget()
+        log_card = self._log_card
         log_card.setObjectName("card")
         log_card_layout = QVBoxLayout(log_card)
         log_card_layout.setContentsMargins(10, 12, 10, 10)
@@ -796,11 +904,18 @@ class MainWindow(QMainWindow):
         )
         self._status_value.setStyleSheet("font-size: 11px;")
 
+        # Keep the Mini mode bar's status readout in sync too
+        self._mini_status_dot.setStyleSheet(f"color: {dot_color}; font-size: 10px;")
+        self._mini_status_label.setText(label)
+        self._mini_status_label.setStyleSheet(f"color: {text_color}; font-size: 11px;")
+
     @pyqtSlot()
     def _on_start(self):
         """Start detection and alert threads."""
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
+        self._btn_mini_start.setEnabled(False)
+        self._btn_mini_stop.setEnabled(True)
         self._session_active = True
         self._session_start_time = 0
         self._frame_count = 0
@@ -813,6 +928,7 @@ class MainWindow(QMainWindow):
         # Reset confidence + analysis
         self._gauge.set_value(0, "—")
         self._update_detection_analysis(None)
+        self._update_mini_face_strip([])
 
         # Reset stats readouts
         self._fps_label.setText("—")
@@ -860,6 +976,17 @@ class MainWindow(QMainWindow):
         self._session_log_event("SESSION", "Detection started.")
         db_log_event("SESSION", "Detection started.")
 
+        # Nudge the window to a screen edge so it's less likely to default
+        # to a position that overlaps the meeting window. This app doesn't
+        # track the meeting window's own bounds (only its own, for capture
+        # self-exclusion), so this docks to the nearest free screen edge
+        # rather than to the meeting window specifically.
+        self._dock_to_screen_edge()
+        if not self._mini_mode:
+            self._session_log_event(
+                "INFO", "Tip: use Mini Mode to keep the meeting fully visible while monitoring."
+            )
+
     @pyqtSlot()
     def _on_stop(self):
         """Stop detection and alert threads, then prompt to save or discard."""
@@ -868,6 +995,7 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         self._btn_stop.setEnabled(False)
+        self._btn_mini_stop.setEnabled(False)
         was_active = self._session_active
         self._session_active = False
         self._session_timer.stop()
@@ -880,6 +1008,7 @@ class MainWindow(QMainWindow):
             self._alert_thread.wait(2000)
 
         self._btn_start.setEnabled(True)
+        self._btn_mini_start.setEnabled(True)
         self._alert_card.setVisible(False)
         self._low_light_bar.setVisible(False)
         self._video_widget.clear()
@@ -959,6 +1088,28 @@ class MainWindow(QMainWindow):
         else:
             self._gauge.set_value(0, "—")
             self._update_detection_analysis(None)
+
+        # Only spend time converting crops to QPixmaps when Mini mode can
+        # actually show them — full mode already shows faces via the live
+        # video overlay, so this would be wasted work there.
+        if self._mini_mode:
+            self._update_mini_face_strip(results)
+
+    def _update_mini_face_strip(self, results: list):
+        """Update Mini mode's live face thumbnails, ranked by confidence (most suspicious first)."""
+        if not results:
+            self._mini_faces_empty_label.setVisible(True)
+            for thumb in self._mini_thumbnails:
+                thumb.clear()
+            return
+
+        self._mini_faces_empty_label.setVisible(False)
+        ranked = sorted(results, key=lambda r: r.p_fake_raw, reverse=True)
+        for i, thumb in enumerate(self._mini_thumbnails):
+            if i < len(ranked) and ranked[i].thumbnail is not None:
+                thumb.set_face(ranked[i].thumbnail, ranked[i].risk_level, ranked[i].p_fake_raw)
+            else:
+                thumb.clear()
 
     @pyqtSlot(float)
     def _on_fps_update(self, fps: float):
@@ -1288,6 +1439,101 @@ QTextEdit#session_log {
     def _on_clear_log(self):
         self._session_log.clear()
 
+    # -- Mini Mode ---------------------------------------------------------------
+
+    _MINI_MODE_SIZE = (300, 220)
+    _FULL_MODE_MIN_SIZE = (900, 680)
+
+    @pyqtSlot()
+    def _toggle_mini_mode(self):
+        if self._mini_mode:
+            self._exit_mini_mode()
+        else:
+            self._enter_mini_mode()
+
+    def _enter_mini_mode(self):
+        """
+        Collapse to a small always-on-top bar showing status + live face
+        thumbnails (not just an abstract gauge) so the user can actually
+        see which face a score belongs to, plus Start/Stop — all while the
+        meeting window underneath stays visible. Detection keeps running
+        unaffected — hidden sections are only setVisible(False), never
+        destroyed or rebuilt, so all state (Session History, Detection
+        Analysis, System Log) is preserved and reappears exactly as it was
+        on returning to Full mode.
+        """
+        if self._mini_mode:
+            return
+        self._full_mode_geometry = self.geometry()
+        self._mini_mode = True
+
+        self._left_panel.setVisible(False)
+        self._confidence_card.setVisible(False)
+        self._detection_analysis_card.setVisible(False)
+        self._session_info_card.setVisible(False)
+        self._log_card.setVisible(False)
+        self._history_section.setVisible(False)
+        self.statusBar().setVisible(False)
+        self._mini_bar.setVisible(True)
+        self._mini_face_strip.setVisible(True)
+        self._btn_mini_mode.setText("⛶ Full Mode")
+
+        # Changing window flags on an already-visible top-level window
+        # needs a hide/show cycle on Windows for WindowStaysOnTopHint to
+        # actually take effect.
+        self.hide()
+        self.setMinimumSize(*self._MINI_MODE_SIZE)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self.show()
+        self.resize(*self._MINI_MODE_SIZE)
+        self._dock_to_screen_edge()
+
+    def _exit_mini_mode(self):
+        """Restore the full window layout, preserving all underlying state."""
+        if not self._mini_mode:
+            return
+        self._mini_mode = False
+
+        self._left_panel.setVisible(True)
+        self._confidence_card.setVisible(True)
+        self._detection_analysis_card.setVisible(True)
+        self._session_info_card.setVisible(True)
+        self._log_card.setVisible(True)
+        if self._history_table.rowCount() > 0:
+            self._history_section.setVisible(True)
+        self.statusBar().setVisible(True)
+        self._mini_bar.setVisible(False)
+        self._mini_face_strip.setVisible(False)
+        self._btn_mini_mode.setText("⛶ Mini Mode")
+
+        self.hide()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+        self.setMinimumSize(*self._FULL_MODE_MIN_SIZE)
+        self.show()
+        if self._full_mode_geometry is not None:
+            self.setGeometry(self._full_mode_geometry)
+
+    def _dock_to_screen_edge(self):
+        """
+        Snap the window to the right edge of the primary screen's available
+        work area (i.e. excluding the taskbar). This app does not track the
+        meeting window's own bounds — only its own, for capture
+        self-exclusion (see _window_screen_rect) — so this docks to a free
+        screen edge as a sensible default rather than to the meeting
+        window specifically.
+        """
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        w = min(self.width(), avail.width())
+        h = min(self.height(), avail.height())
+        if (w, h) != (self.width(), self.height()):
+            self.resize(w, h)
+        x = avail.right() - w + 1
+        y = avail.top()
+        self.move(max(avail.left(), x), y)
+
     # -- Window geometry exclusion --------------------------------------------
 
     def _window_screen_rect(self) -> tuple:
@@ -1312,6 +1558,15 @@ QTextEdit#session_log {
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._sync_exclusion()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # winId() forces native window creation, so this must run after the
+        # window is actually shown; guarded to apply only once per process.
+        if not self._capture_exclusion_applied:
+            self._capture_exclusion_applied = True
+            mechanism = apply_capture_exclusion(int(self.winId()))
+            self._session_log_event("INFO", f"Capture exclusion: {mechanism}")
 
     # -- Cleanup ---------------------------------------------------------------
 
