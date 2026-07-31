@@ -6,6 +6,7 @@ Wires all GUI components and background threads.
 """
 
 import threading
+import time
 from datetime import timedelta, datetime
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QDialog,
     QApplication,
+    QScrollArea,
 )
 from PyQt6.QtCore import pyqtSlot, Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QColor, QFont, QIcon, QPixmap, QPainter, QPainterPath, QPen, QBrush
@@ -324,6 +326,10 @@ class MainWindow(QMainWindow):
         self._confidence_card = self._build_confidence_card()
         right_layout.addWidget(self._confidence_card)
 
+        # Detection Analysis Card — always-visible reasoning for the latest result
+        self._detection_analysis_card = self._build_detection_analysis_card()
+        right_layout.addWidget(self._detection_analysis_card)
+
         # Alert Card (hidden by default)
         self._alert_card = self._build_alert_card()
         self._alert_card.setVisible(False)
@@ -356,9 +362,18 @@ class MainWindow(QMainWindow):
         self._session_log.setObjectName("session_log")
         log_card_layout.addWidget(self._session_log, stretch=1)
 
+        log_card.setMinimumHeight(160)
         right_layout.addWidget(log_card, stretch=1)
 
-        return right_container
+        # Card count is variable (alert card toggles, analysis reasons vary
+        # 0-3 lines), so total height can exceed the window's minimum size.
+        # Scroll rather than let every card get squeezed below a usable size.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(right_container)
+        return scroll
 
     def _build_confidence_card(self) -> QWidget:
         """Build confidence score card."""
@@ -389,6 +404,114 @@ class MainWindow(QMainWindow):
 
         return card
 
+    _ANALYSIS_MAX_REASONS = 3
+
+    def _build_detection_analysis_card(self) -> QWidget:
+        """Build the Detection Analysis card: verdict + full bullet-point reasoning for the latest result."""
+        card = QWidget()
+        card.setObjectName("card")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setSpacing(8)
+
+        # Title
+        title_row = QHBoxLayout()
+        icon = QLabel("🔍")
+        icon.setStyleSheet("font-size: 12px;")
+        title_row.addWidget(icon)
+        title = QLabel("DETECTION ANALYSIS")
+        title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+        layout.addLayout(title_row)
+
+        # Verdict row: colour-coded pill + confidence % + relative timestamp
+        verdict_row = QHBoxLayout()
+        verdict_row.setSpacing(8)
+        self._analysis_verdict_badge = QLabel("")
+        self._analysis_verdict_badge.setFixedHeight(20)
+        verdict_row.addWidget(self._analysis_verdict_badge)
+        self._analysis_pct_label = QLabel("")
+        self._analysis_pct_label.setStyleSheet("color: #E5E7EB; font-size: 13px; font-weight: bold;")
+        verdict_row.addWidget(self._analysis_pct_label)
+        verdict_row.addStretch()
+        self._analysis_time_label = QLabel("")
+        self._analysis_time_label.setStyleSheet("color: #6B7280; font-size: 10px;")
+        verdict_row.addWidget(self._analysis_time_label)
+        layout.addLayout(verdict_row)
+
+        # Empty-state placeholder, shown until the first result arrives
+        self._analysis_empty_label = QLabel("No analysis yet — start detection to see results.")
+        self._analysis_empty_label.setWordWrap(True)
+        self._analysis_empty_label.setStyleSheet("color: #6B7280; font-size: 11px; font-style: italic;")
+        layout.addWidget(self._analysis_empty_label)
+
+        # Fixed pool of bullet rows (max reasons a DEEPFAKE result can carry
+        # is 3 — see runtime/detection/explainer.py). Reused/hidden rather
+        # than rebuilt each update to avoid widget churn at frame rate.
+        self._analysis_bullet_rows = []
+        for _ in range(self._ANALYSIS_MAX_REASONS):
+            row_layout = QHBoxLayout()
+            row_layout.setSpacing(6)
+            bullet_icon = QLabel("●")
+            bullet_icon.setStyleSheet("color: #4B5563; font-size: 7px;")
+            bullet_icon.setFixedWidth(10)
+            bullet_text = QLabel("")
+            bullet_text.setWordWrap(True)
+            bullet_text.setStyleSheet("color: #C4C9D4; font-size: 11px;")
+            row_layout.addWidget(bullet_icon, 0, Qt.AlignmentFlag.AlignTop)
+            row_layout.addWidget(bullet_text, 1)
+            layout.addLayout(row_layout)
+            self._analysis_bullet_rows.append((bullet_icon, bullet_text))
+
+        self._update_detection_analysis(None)
+        return card
+
+    def _update_detection_analysis(self, result):
+        """
+        Sync the Detection Analysis card with a FaceResult (or None to show
+        the empty state). Called every frame from _on_frame_ready, mirroring
+        the Confidence Score gauge so both always reflect the same result.
+        """
+        if result is None:
+            self._analysis_empty_label.setVisible(True)
+            self._analysis_verdict_badge.setVisible(False)
+            self._analysis_pct_label.setVisible(False)
+            self._analysis_time_label.setVisible(False)
+            for bullet_icon, bullet_text in self._analysis_bullet_rows:
+                bullet_icon.setVisible(False)
+                bullet_text.setVisible(False)
+            return
+
+        self._analysis_empty_label.setVisible(False)
+        self._analysis_verdict_badge.setVisible(True)
+        self._analysis_pct_label.setVisible(True)
+        self._analysis_time_label.setVisible(True)
+
+        is_fake = result.risk_level == "DEEPFAKE"
+        badge_bg, badge_fg = ("#EF4444", "#2D0A0A") if is_fake else ("#22C55E", "#052E16")
+        self._analysis_verdict_badge.setText(f"  {result.risk_level}  ")
+        self._analysis_verdict_badge.setStyleSheet(
+            f"background-color: {badge_bg}; color: {badge_fg}; font-size: 10px; "
+            f"font-weight: bold; border-radius: 10px;"
+        )
+        self._analysis_pct_label.setText(f"{result.p_fake_raw * 100:.1f}%")
+
+        elapsed = time.perf_counter() - result.last_updated
+        age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
+        self._analysis_time_label.setText(age_str)
+
+        reasons = result.explanation or [
+            "No local visual artifacts detected by heuristic analysis — "
+            "this result is based on the cloud model's own assessment."
+        ]
+        for i, (bullet_icon, bullet_text) in enumerate(self._analysis_bullet_rows):
+            show = i < len(reasons)
+            bullet_icon.setVisible(show)
+            bullet_text.setVisible(show)
+            if show:
+                bullet_text.setText(reasons[i])
+
     def _build_alert_card(self) -> QWidget:
         """Build alert card (shown when alert triggered)."""
         card = QWidget()
@@ -410,14 +533,12 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
         layout.addLayout(header_layout)
 
-        # Explanation text (why this face was flagged). Single-line + elided:
-        # the sidebar's fixed-height layout can't grow to fit wrapped
-        # multi-sentence text without clipping, so the full text goes in the
-        # tooltip and session log instead (see _show_alert).
-        self._alert_reason_label = QLabel("")
-        self._alert_reason_label.setWordWrap(False)
-        self._alert_reason_label.setStyleSheet("color: #D8B675; font-size: 11px;")
-        layout.addWidget(self._alert_reason_label)
+        # Full reasoning lives in the always-visible Detection Analysis card
+        # above this one — this banner is just the dismissible action prompt.
+        hint_label = QLabel("See Detection Analysis above for the full reasoning.")
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet("color: #D8B675; font-size: 11px;")
+        layout.addWidget(hint_label)
 
         # Acknowledge button
         self._btn_acknowledge = QPushButton("Acknowledge alert")
@@ -688,10 +809,10 @@ class MainWindow(QMainWindow):
 
         # Hide alert card
         self._alert_card.setVisible(False)
-        self._alert_reason_label.setText("")
 
-        # Reset confidence
+        # Reset confidence + analysis
         self._gauge.set_value(0, "—")
+        self._update_detection_analysis(None)
 
         # Reset stats readouts
         self._fps_label.setText("—")
@@ -825,17 +946,19 @@ class MainWindow(QMainWindow):
         if self._status_state == "Initializing":
             self._set_status("Detecting")
 
-        # Update confidence based on worst result
+        # Update confidence + analysis based on worst result
         if results:
             worst = max(results, key=lambda r: r.p_fake_raw)
             # Use raw score for accuracy — real-time API response
             display_confidence = worst.p_fake_raw * 100
             self._gauge.set_value(display_confidence, worst.risk_level.title())
+            self._update_detection_analysis(worst)
 
             if worst.p_fake_raw >= config.FAKE_THRESHOLD and not self._current_alert_active:
-                self._show_alert(worst.explanation)
+                self._show_alert()
         else:
             self._gauge.set_value(0, "—")
+            self._update_detection_analysis(None)
 
     @pyqtSlot(float)
     def _on_fps_update(self, fps: float):
@@ -867,11 +990,16 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(float, list)
     def _on_alert_triggered(self, peak_p_fake: float, explanation: list):
-        """Handle alert trigger from alert thread."""
+        """
+        Handle alert trigger from alert thread.
+
+        The log only records a one-line summary — the full reasoning
+        (`explanation`) is surfaced continuously in the Detection Analysis
+        card via _on_frame_ready, not duplicated into the log here.
+        """
         if not self._current_alert_active:
-            self._show_alert(explanation)
-        reason_suffix = f" Reasons: {'; '.join(explanation)}" if explanation else ""
-        detail = f"Deepfake detected. Peak confidence: {peak_p_fake:.1%}{reason_suffix}"
+            self._show_alert()
+        detail = f"Deepfake detected — Peak confidence: {peak_p_fake:.1%}"
         self._session_log_event("ALERT", detail)
         db_log_event("ALERT", detail, peak_confidence=peak_p_fake)
 
@@ -892,29 +1020,10 @@ class MainWindow(QMainWindow):
         db_log_event("ERROR", error_msg)
         self._on_stop()
 
-    def _show_alert(self, explanation: list = None):
-        """Show alert card and reflect the Alert state."""
+    def _show_alert(self):
+        """Show alert card and reflect the Alert state. Reasoning lives in the Detection Analysis card."""
         if not self._current_alert_active:
             self._alert_count += 1
-        reasons = explanation or []
-        text = " · ".join(reasons) if reasons else (
-            "No local visual artifacts detected by heuristic analysis — "
-            "this result is based on the cloud model's own assessment."
-        )
-        # Elide to fit the sidebar so the fixed-height layout never has to
-        # grow (which would clip against the button below it). Measured off
-        # the alert card's parent container rather than the label itself:
-        # the card is hidden until now, so its own width may not yet reflect
-        # the real layout-constrained size, but the always-visible parent's
-        # width is reliable. The full text is always available via tooltip
-        # and is also written to the session log / DB detail in full.
-        parent_width = self._alert_card.parentWidget().width() or 300
-        available_width = max(parent_width - 40, 150)
-        display_text = self._alert_reason_label.fontMetrics().elidedText(
-            text, Qt.TextElideMode.ElideRight, available_width
-        )
-        self._alert_reason_label.setText(display_text)
-        self._alert_reason_label.setToolTip(text)
         self._alert_card.setVisible(True)
         self._current_alert_active = True
         self._set_status("Alert")
@@ -945,6 +1054,32 @@ QMainWindow, QWidget#central {
 
 QSplitter::handle {
     background-color: transparent;
+}
+
+/* Right sidebar scroll area */
+QScrollArea, QScrollArea > QWidget > QWidget {
+    background-color: transparent;
+    border: none;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0;
+}
+QScrollBar::handle:vertical {
+    background: #262B36;
+    border-radius: 4px;
+    min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #333A48;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0;
+}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+    background: transparent;
 }
 
 /* Buttons */

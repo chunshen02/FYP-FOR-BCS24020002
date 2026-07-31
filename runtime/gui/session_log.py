@@ -33,14 +33,13 @@ class SessionLog(QTextEdit):
             "ERROR": "#FBBF24",
         }
         colour = colour_map.get(event_type, "#C4C9D4")
-        # Multi-line details (e.g. "Reasons: a; b") get an indented continuation
-        # so bullet-style detail lines read clearly under the event line.
-        detail_html = detail.replace(" Reasons: ", "<br>&nbsp;&nbsp;&nbsp;&nbsp;Reasons: ")
+        # Kept single-line by design: full reasoning lives in the Detection
+        # Analysis card, not in this event timeline (see main_window.py).
         entry = (
             f'<p style="margin: 0 0 6px 0; line-height: 145%;">'
             f'<span style="color:#4B5563;">[{timestamp}]</span> '
             f'<span style="color:{colour}; font-weight: bold;">[{event_type}]</span> '
-            f'<span style="color:#C4C9D4;">{detail_html}</span>'
+            f'<span style="color:#C4C9D4;">{detail}</span>'
             f'</p>'
         )
         self.append(entry)
