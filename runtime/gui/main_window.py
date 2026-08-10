@@ -36,7 +36,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
-from runtime.gui.dialogs import SaveSessionDialog, PracticeModeDialog
+from runtime.gui.dialogs import SaveSessionDialog
 from runtime.gui.gauge_widget import GaugeWidget
 from runtime.gui.window_affinity import apply_capture_exclusion
 from runtime.gui.face_thumbnail import FaceThumbnail
@@ -282,17 +282,6 @@ class MainWindow(QMainWindow):
         self._btn_mini_mode.setToolTip("Collapse to a small always-on-top bar so the meeting window stays visible")
         self._btn_mini_mode.clicked.connect(self._toggle_mini_mode)
         control_bar.addWidget(self._btn_mini_mode)
-
-        # Practice Mode — blind Real/Fake guessing on pre-loaded clips for user-study
-        # pre-test/post-test comparisons. Fully separate from live detection.
-        self._btn_practice_mode = QPushButton("🎓 Practice Mode")
-        self._btn_practice_mode.setObjectName("btn_clear_zone")
-        self._btn_practice_mode.setFixedHeight(32)
-        self._btn_practice_mode.setToolTip(
-            "Blind-guess Real/Fake on pre-loaded clips, then compare against the tool's verdict"
-        )
-        self._btn_practice_mode.clicked.connect(self._on_open_practice_mode)
-        control_bar.addWidget(self._btn_practice_mode)
 
         control_bar.addStretch()
 
@@ -1067,15 +1056,6 @@ class MainWindow(QMainWindow):
         path = os.path.join(screenshots_dir, filename)
         pixmap.save(path)
         self._session_log_event("INFO", f"Screenshot saved: {filename}")
-
-    @pyqtSlot()
-    def _on_open_practice_mode(self):
-        """Open the Practice Mode dialog for blind Real/Fake guessing against pre-loaded clips."""
-        if self._shared_detector is None or self._shared_engine is None:
-            self._session_log_event("INFO", "Practice Mode: still initializing, try again in a moment.")
-            return
-        dialog = PracticeModeDialog(self._shared_detector, self._shared_engine, parent=self)
-        dialog.exec()
 
     @pyqtSlot()
     def _on_acknowledge_alert(self):

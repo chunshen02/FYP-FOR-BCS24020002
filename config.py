@@ -59,9 +59,6 @@ BENCHMARK_REPEAT = 3
 # ── Offline Batch Evaluation (evaluation_runner.py) ─────────────────────────────
 EVAL_FRAMES_PER_VIDEO = 5             # Frames sampled per video clip during batch evaluation
 
-# ── Practice Mode (user study pre-test/post-test) ───────────────────────────────
-PRACTICE_CLIPS_DIR = os.path.join(BASE_DIR, "practice_clips")  # real/ and deepfake/ subfolders of video clips
-
 # ── Low-Light Handling ────────────────────────────────────────────────────────
 LOW_LIGHT_THRESHOLD = 40              # Frame mean brightness (0-255) below which low-light mode activates
 LOW_LIGHT_GAMMA = 0.5                 # Gamma exponent applied to dark face crops before API submission

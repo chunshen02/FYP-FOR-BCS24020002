@@ -75,6 +75,37 @@ matched_ids, survivors = match_tracks(
 assert matched_ids == ["f0"] and survivors["f0"]["missed"] == 0
 print("[PASS] match_tracks() is independently callable and testable without a QThread")
 
-print("\nKnown limitation (not fixed here): two faces crossing paths can swap ids —")
-print("IoU + centroid tracking has no appearance features to disambiguate that case.")
+# 9. Head-to-head proof that IoU changes the outcome vs. centroid-only fallback,
+# on the exact same fast-movement input as test 2 (60px jump > MAX_DIST=50px).
+tracks_before = {"f0": {"bbox": box(100, 100, 200, 200), "missed": 0}}
+moved_bbox = [box(160, 100, 200, 200)]
+
+matched_with_iou, _ = match_tracks(tracks_before, moved_bbox, MAX_DIST, IOU_THRESHOLD, GRACE_FRAMES)
+# iou_threshold=1.1 is unreachable (IoU is bounded at 1.0), forcing pure centroid fallback.
+matched_centroid_only, _ = match_tracks(tracks_before, moved_bbox, MAX_DIST, 1.1, GRACE_FRAMES)
+
+assert matched_with_iou == ["f0"], f"expected IoU path to keep the id, got {matched_with_iou}"
+assert matched_centroid_only == [None], (
+    f"expected centroid-only fallback (IoU disabled) to LOSE the id on this same input "
+    f"(60px jump > MAX_DIST={MAX_DIST}px), got {matched_centroid_only} — if this fails, "
+    f"IoU isn't actually changing the outcome versus centroid-only matching"
+)
+print("[PASS] head-to-head comparison: IoU rescues an id that centroid-only matching would lose")
+
+# 10. Two faces fully swapping screen positions in a single frame — CONFIRMED,
+# characterized limitation, not silently assumed. No position-only signal (centroid
+# or IoU) can tell "these two identities crossed" apart from "two faces stayed put";
+# the swapped detection lands exactly on the OTHER track's last known position, so
+# it inherits that track's id instead of its own physical owner's.
+tracker = _FaceTracker()
+ids_before = tracker.update([box(0, 0), box(300, 0)])   # left id, right id
+left_id_before, right_id_before = ids_before
+ids_after = tracker.update([box(300, 0), box(0, 0)])    # physically swapped in one frame
+matched_at_300, matched_at_0 = ids_after
+
+assert matched_at_300 == right_id_before, "expected the id that WAS at (300,0) to stay assigned to (300,0)"
+assert matched_at_0 == left_id_before, "expected the id that WAS at (0,0) to stay assigned to (0,0)"
+print("[PASS] confirmed limitation: a full single-frame position swap reassigns ids by")
+print("       position, not by which physical face actually moved — inherent to any")
+print("       position-only tracker (centroid or IoU alike), not something IoU fixes.")
 print("\nALL FACE TRACKER TESTS PASSED")
