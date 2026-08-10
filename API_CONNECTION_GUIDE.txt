@@ -74,13 +74,20 @@ deepfake. A score of 0.0 means the face is almost certainly real.
 
 STEP 4 — RISK LEVELS
 ----------------------
-The fake_score is compared against two thresholds:
+The fake_score is compared against a single threshold to produce
+a binary decision:
 
-    Score below 50%   ->  GREEN   (face appears real)
-    Score 50% to 69%  ->  AMBER   (suspicious, monitor closely)
-    Score 70% or above -> RED     (deepfake alert triggered)
+    Score below 70%      ->  REAL      (face appears genuine)
+    Score 70% or above   ->  DEEPFAKE  (deepfake alert triggered)
 
-These thresholds can be adjusted in config.py.
+This threshold (FAKE_THRESHOLD) can be adjusted in config.py.
+When a face is classified DEEPFAKE, the system also runs a set of
+local CV heuristics (see runtime/detection/explainer.py) to
+produce supporting evidence — e.g. unusual frequency-spectrum
+energy, a noise-pattern mismatch between the face and its
+surroundings, or higher-than-typical left-right asymmetry. These
+are shown in the Detection Analysis panel as corroborating,
+best-effort evidence, not a separate classifier.
 
 
 STEP 5 — RATE LIMIT

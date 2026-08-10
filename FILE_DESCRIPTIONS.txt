@@ -21,10 +21,12 @@ used across the entire project. This includes:
   - MediaPipe face detection confidence threshold
   - Bounding box expansion ratio and alignment angle threshold
   - Face crop size and JPEG quality for API submission
-  - Fake/warning score thresholds (FAKE_THRESHOLD, WARNING_THRESHOLD)
-  - EMA smoothing factor (EMA_ALPHA)
+  - Fake threshold (FAKE_THRESHOLD) for the binary REAL/DEEPFAKE
+    decision
   - Alert trigger and dismiss frame counters
   - Performance benchmark targets (FPS, latency, CPU, RAM)
+  - Low-light detection threshold and gamma correction exponent
+  - Local explainability (CV heuristic) thresholds
 No logic lives here — only constants. All other modules import
 from this file, making tuning a one-place operation.
 
@@ -44,12 +46,14 @@ the detection pipeline.
 ----------------------------------------------------------------
 Performs face detection and alignment on BGR frames using the
 MediaPipe BlazeFace Tasks API. On first run it downloads the
-BlazeFace short-range TFLite model. The FaceDetector class
-detects all faces in a frame, expands each bounding box by a
-configurable ratio, optionally applies affine rotation alignment
-if the face tilt exceeds a threshold, and returns a list of
-(crop, bbox) tuples. The bbox dictionary contains pixel
-coordinates used by the overlay renderer and inference engine.
+BlazeFace short-range TFLite model. The FaceDetector class applies
+CLAHE contrast enhancement (on a copy of the frame, for detection
+only) to improve accuracy in low light, detects all faces, expands
+each bounding box by a configurable ratio, optionally applies
+affine rotation alignment if the face tilt exceeds a threshold,
+and returns a list of (crop, bbox) tuples. The bbox dictionary
+contains pixel coordinates used by the overlay renderer and
+inference engine.
 
 ----------------------------------------------------------------
 5. runtime/detection/preprocessor.py
@@ -57,10 +61,14 @@ coordinates used by the overlay renderer and inference engine.
 Converts a raw BGR face crop (numpy array) into JPEG-encoded
 bytes ready for HTTP submission to the BitMind API. The
 Preprocessor class resizes the crop to the configured square
-size (FACE_CROP_SIZE) using area interpolation and encodes it
-as JPEG at the configured quality (FACE_CROP_JPEG_QUALITY).
-OpenCV handles the BGR-to-YCbCr conversion internally, so the
-resulting JPEG decodes correctly as RGB on the server side.
+size (FACE_CROP_SIZE) using cubic interpolation, applies gamma
+correction to brighten crops detected as low-light, and encodes
+the result as JPEG at the configured quality (FACE_CROP_JPEG_QUALITY).
+process_with_array() additionally returns the pre-encode BGR array
+(no JPEG round-trip) for local artifact analysis in explainer.py,
+and is also what Mini Mode displays as the face thumbnail. OpenCV
+handles the BGR-to-YCbCr conversion internally, so the resulting
+JPEG decodes correctly as RGB on the server side.
 
 ----------------------------------------------------------------
 6. runtime/detection/inference.py
@@ -68,96 +76,160 @@ resulting JPEG decodes correctly as RGB on the server side.
 Submits JPEG face crop bytes to the BitMind Oracle API and
 returns classification results. Key components:
 
-  - FaceResult (dataclass): holds raw P_fake score, EMA-smoothed
-    display score, risk level (GREEN/AMBER/RED), API response
-    time in milliseconds, bounding box, and last-updated timestamp.
+  - FaceResult (dataclass): holds the raw P_fake score, risk
+    level ("REAL" or "DEEPFAKE"), API response time in
+    milliseconds, bounding box, last-updated timestamp, a list
+    of local CV explanation strings (populated only for DEEPFAKE
+    results), and the exact preprocessed thumbnail used for the
+    analysis (for Mini mode display).
 
   - DeepfakeInferenceEngine: maintains a persistent requests
-    Session with the Bearer token, tracks per-face EMA state
-    keyed by face ID, enforces the 1 request/second rate limit
-    on the free tier, base64-encodes the JPEG payload, POSTs it
-    to the API, and parses the isAI + confidence fields to derive
-    P_fake. It also exposes evict_stale_ema() to clean up state
-    for faces that have left the frame.
+    Session with the Bearer token, enforces the 1 request/second
+    rate limit on the free tier, base64-encodes the JPEG payload,
+    POSTs it to the API, and parses the isAI + confidence fields
+    to derive P_fake.
 
 ----------------------------------------------------------------
-7. runtime/threads/detection_worker.py
+7. runtime/detection/explainer.py
+----------------------------------------------------------------
+Runs local CV forensic heuristics on a face crop already
+classified as DEEPFAKE by the BitMind API, producing human-readable
+evidence strings for the Detection Analysis card. No additional
+ML model or pip dependency — numpy + opencv only. compute_metrics()
+computes three signals: FFT high/low frequency energy ratio
+(elevated ratio suggests GAN upsampling artifacts), inner-vs-border
+noise-residual variance ratio (suggests the face was digitally
+blended into the frame), and left-right symmetry deviation
+(suggests artificially generated/warped features). analyze_artifacts()
+compares each metric against a threshold from config.py and returns
+0-3 evidence strings. Thresholds are calibrated as statistical
+outlier cut-offs against a small manual sample, not a trained
+classifier — treated as corroborating, best-effort evidence only.
+
+----------------------------------------------------------------
+8. runtime/threads/detection_worker.py
 ----------------------------------------------------------------
 The core QThread that runs the real-time detection pipeline
 continuously in the background. Architecture:
 
-  - Main loop (~15 FPS): captures a screen frame, runs face
-    detection, assigns stable IDs via _FaceTracker, prepares
-    JPEG crops, emits annotated frames and FaceResult lists to
-    the GUI thread via Qt signals.
+  - Main loop (~15 FPS): captures a screen frame, masks the app's
+    own window region for display, optionally crops to a
+    user-selected detection zone, upscales for small-face
+    detection, runs face detection, assigns stable IDs via
+    _FaceTracker, prepares JPEG crops, emits annotated frames,
+    FaceResult lists, and pending bboxes to the GUI thread via
+    Qt signals. Also emits a low-light warning based on a cheap
+    downsampled brightness check and the count of shown vs. total
+    detected faces.
 
   - API daemon thread: round-robins through all currently
     visible faces, calling the BitMind API once per face per
-    cycle (rate limit is enforced inside DeepfakeInferenceEngine).
-    Results are cached and shared back to the main loop via a
-    thread-safe lock.
+    cycle (rate limit is enforced inside DeepfakeInferenceEngine),
+    running the local explainer on DEEPFAKE results. Results are
+    cached and shared back to the main loop via a thread-safe lock.
 
   - _FaceTracker: assigns stable string IDs to faces across
     frames using bounding box centre proximity, ensuring that
-    per-face EMA state and cached results remain consistent even
-    when faces reorder or briefly disappear.
+    cached results remain consistent even when faces reorder or
+    briefly disappear.
 
-  - _draw_overlays(): draws colour-coded rectangles and
-    confidence labels (GREEN < 50% | AMBER 50–70% | RED ≥ 70%)
-    directly onto the frame using OpenCV before emitting it.
+  - set_exclusion_region() / set_focus_region(): let the GUI
+    blank the app's own window region and restrict detection to
+    a user-drawn zone, respectively.
 
 ----------------------------------------------------------------
-8. runtime/threads/alert_thread.py
+9. runtime/threads/alert_thread.py
 ----------------------------------------------------------------
 A lightweight QThread that monitors the stream of FaceResult
 lists produced by DetectionWorker and manages alert state.
-It counts consecutive RED frames: if ALERT_TRIGGER_FRAMES are
-seen in a row it emits alert_triggered(peak_p_fake); once the
-alert is active it counts consecutive non-RED frames and emits
-alert_dismissed() after ALERT_DISMISS_FRAMES. This hysteresis
-logic prevents rapid flickering of the alert card in the GUI.
-Incoming result batches are queued non-blocking (frames are
+It counts consecutive DEEPFAKE frames: if ALERT_TRIGGER_FRAMES are
+seen in a row it emits alert_triggered(peak_p_fake, explanation)
+carrying the peak face's confidence and its local CV evidence
+strings; once the alert is active it counts consecutive non-DEEPFAKE
+frames and emits alert_dismissed() after ALERT_DISMISS_FRAMES. This
+hysteresis logic prevents rapid flickering of the alert card in the
+GUI. Incoming result batches are queued non-blocking (frames are
 dropped if the queue is full) to avoid stalling the GUI thread.
 
 ----------------------------------------------------------------
-9. runtime/gui/main_window.py
+10. runtime/gui/main_window.py
 ----------------------------------------------------------------
 The main PyQt6 application window. It wires all GUI components
 and background threads together. Responsibilities include:
 
   - Building the full window layout: left panel (video + control
-    bar), right panel (confidence card, alert card, session info
-    card, session log), session history table, and status bar.
+    bar), right panel (confidence gauge, Detection Analysis card,
+    alert card, session info card, system log), session history
+    table, and status bar.
   - Starting and stopping DetectionWorker and AlertThread,
     connecting all Qt signals to their respective slots.
-  - Updating the confidence progress bar, FPS readout, face
-    count, and session duration in real time.
-  - Showing/hiding the alert card and updating status indicators
-    (Idle / Initializing / Detecting / Alert / Stopping).
+  - Updating the confidence gauge, FPS readout, face count,
+    API response time, and session duration in real time.
+  - Showing/hiding the alert card, syncing the always-visible
+    Detection Analysis card with the latest result, and updating
+    status indicators (Idle / Initializing / Detecting / Alert /
+    Stopping).
   - Prompting the user to save or discard the session on stop.
   - Taking screenshots of the live video feed.
-  - Using SetWindowDisplayAffinity (Windows API) to exclude the
-    application window from mss screen capture, preventing the
-    detector from analysing its own UI.
+  - Handling detection-zone selection events from VideoWidget and
+    forwarding them to DetectionWorker.
+  - Mini Mode: collapsing to a small always-on-top bar with live
+    face thumbnails and Start/Stop controls, so a meeting window
+    underneath stays visible; all other sections are hidden
+    (not destroyed), preserving state when returning to full mode.
+  - Pre-initialising the shared FaceDetector and
+    DeepfakeInferenceEngine on a background thread at startup, and
+    reusing them across sessions to avoid a slow per-session reload.
+  - Using SetWindowDisplayAffinity, via window_affinity.py, to
+    exclude the application window from mss screen capture,
+    preventing the detector from analysing its own UI.
 
 ----------------------------------------------------------------
-10. runtime/gui/video_widget.py
+11. runtime/gui/video_widget.py
 ----------------------------------------------------------------
 A custom QWidget subclass responsible for displaying live video
 frames with face detection overlays. It converts incoming BGR
 numpy frames to QPixmap, scales them to fit the widget while
 preserving aspect ratio, and uses a QPainter-based paintEvent
 to draw:
-  - Colour-coded bounding boxes (GREEN/AMBER/RED) around faces.
-  - Confidence badges (e.g. "Deepfake 82.3%" or "Real 94.1%")
-    below each bounding box, using the EMA-smoothed score.
+  - Colour-coded bounding boxes (green REAL / red DEEPFAKE)
+    around analyzed faces, and dashed grey placeholder boxes with
+    an "Analyzing..." badge for faces detected but not yet scored.
+  - Confidence badges below each analyzed box showing the raw
+    P_fake percentage, risk label, and a relative timestamp
+    ("just now" / "Ns ago").
   - A blinking red circle with a "DETECTING" label in the
     top-left corner while a feed is active.
-It also exposes grab_screenshot() to capture the current frame
-as a QPixmap for saving to disk.
+It also supports drag-to-select a rectangular detection zone
+(left-click drag to set, right-click to clear), emitted via the
+region_selected signal, and exposes grab_screenshot() to capture
+the current frame as a QPixmap for saving to disk.
 
 ----------------------------------------------------------------
-11. runtime/gui/session_log.py
+12. runtime/gui/gauge_widget.py
+----------------------------------------------------------------
+Custom-painted semicircular confidence gauge (GaugeWidget) used in
+the Confidence Score card, replacing a plain horizontal progress
+bar. Draws a background track plus a green -> amber -> red gradient
+arc built from short interpolated segments, a marker dot at the
+current value's position, 0%/100% end labels, and a centered
+percentage + status label (e.g. "Real" / "Deepfake" / "—").
+set_value(value, label) updates the reading (0-100) and label.
+
+----------------------------------------------------------------
+13. runtime/gui/face_thumbnail.py
+----------------------------------------------------------------
+Small bordered face-crop thumbnail widget (FaceThumbnail) used in
+Mini Mode's live face strip, so the user can visually confirm which
+specific face a confidence score belongs to without needing the
+full video preview. set_face() displays the exact preprocessed BGR
+crop that was analyzed (from FaceResult.thumbnail), with a
+risk-coloured border (green/red) and a confidence percentage label;
+clear() hides the slot when fewer faces are currently tracked than
+the fixed thumbnail pool size (MAX_FACES).
+
+----------------------------------------------------------------
+14. runtime/gui/session_log.py
 ----------------------------------------------------------------
 A read-only QTextEdit subclass that displays a colour-coded,
 timestamped log of all detection events within the current
@@ -167,11 +239,13 @@ session. Each event type has a distinct colour:
   - SESSION → grey
   - INFO    → light grey
   - ERROR   → orange
-New entries are appended with HTML formatting and the scroll
-position is automatically advanced to the latest entry.
+Entries are kept to a single line by design — the full DEEPFAKE
+reasoning is surfaced continuously in the Detection Analysis card
+instead. New entries are appended with HTML formatting and the
+scroll position is automatically advanced to the latest entry.
 
 ----------------------------------------------------------------
-12. runtime/gui/dialogs.py
+15. runtime/gui/dialogs.py
 ----------------------------------------------------------------
 Contains the SaveSessionDialog modal dialog shown when the user
 presses Stop. It displays the session duration, number of alerts
@@ -182,7 +256,7 @@ to drop it. The dialog result is checked in MainWindow._on_stop()
 to decide whether to write the stop event to the database.
 
 ----------------------------------------------------------------
-13. runtime/gui/alert_system.py
+16. runtime/gui/alert_system.py
 ----------------------------------------------------------------
 Provides the AlertOverlay helper class, which applies a red
 border stylesheet to a target widget when an alert fires and
@@ -193,7 +267,20 @@ try/except so that a missing or unavailable notification backend
 never crashes the application.
 
 ----------------------------------------------------------------
-14. runtime/storage/database.py
+17. runtime/gui/window_affinity.py
+----------------------------------------------------------------
+Excludes the app's own window from screen capture at the OS
+compositor level via the Windows SetWindowDisplayAffinity API —
+WDA_EXCLUDEFROMCAPTURE on Windows 10 2004+ (build 19041+), or the
+older WDA_MONITOR flag as a fallback on earlier builds — so the
+app's window never reaches any capture buffer (ours or anyone
+else's) in the first place. This is the primary self-exclusion
+mechanism; DetectionWorker's pixel-masking (_mask_exclusion)
+remains as a defensive fallback for non-Windows platforms or if
+this call fails. No-ops on non-Windows platforms.
+
+----------------------------------------------------------------
+18. runtime/storage/database.py
 ----------------------------------------------------------------
 Local SQLite persistence layer for session event logging. All
 data is stored in a single file on the host machine (DB_PATH
@@ -207,13 +294,17 @@ functions:
     rows ordered by ID descending.
   - get_all_sessions(): reconstructs completed sessions from the
     event log by pairing "Detection started" and "Detection
-    stopped" SESSION events, counting ALERT events in between,
-    and computing the duration — returns a list of summary dicts
-    displayed in the history table.
-  - clear_history(): deletes all records (used for testing only).
+    stopped" SESSION events in chronological order, counting
+    ALERT events in between, and computing the duration — returns
+    a list of summary dicts displayed in the history table.
+  - delete_session(): deletes all events belonging to a single
+    session, identified by its start timestamp, used by the
+    "Delete Selected" control in the history table.
+  - clear_history(): deletes all records (used by the "Clear All"
+    control and for testing).
 
 ----------------------------------------------------------------
-15. benchmark.py
+19. benchmark.py
 ----------------------------------------------------------------
 Standalone script for measuring end-to-end pipeline performance.
 It runs BENCHMARK_REPEAT passes, each consisting of a warmup
@@ -229,6 +320,35 @@ values against the targets defined in config.py (TARGET_FPS,
 TARGET_LATENCY_MS, TARGET_CPU_PERCENT, TARGET_RAM_MB) with
 PASS/FAIL status for each metric, and reports FPS variance
 across passes as a stability indicator.
+
+----------------------------------------------------------------
+20. accuracy_test.py
+----------------------------------------------------------------
+Standalone script that evaluates deepfake detection accuracy
+against a labelled image dataset (test_samples/real/ and
+test_samples/deepfake/, minimum 10 images total, at least 1 per
+class). Runs each image through the full pipeline — face
+detection, JPEG preprocessing, BitMind API — picking the worst
+(highest P_fake) face when multiple are detected; images with no
+detected face are submitted whole, for pre-cropped datasets. Prints
+a per-image result table, then a confusion matrix (TP/TN/FP/FN),
+accuracy, precision, recall, F1 score, per-class accuracy, and
+mean API response time. Honors the API's 1 request/second rate
+limit automatically.
+
+----------------------------------------------------------------
+21. prepare_ff_samples.py
+----------------------------------------------------------------
+Standalone script that extracts labelled frames from a
+FaceForensics++ dataset and saves them into test_samples/real/ and
+test_samples/deepfake/ for use with accuracy_test.py. Auto-detects
+whether the dataset root is the flat Kaggle repack layout
+(<root>/original/, <root>/<Method>/) or the standard nested FF++
+layout (<root>/original_sequences/..., <root>/manipulated_sequences/...).
+Configurable via CLI flags for target frame counts, manipulation
+method (Deepfakes / Face2Face / FaceSwap / NeuralTextures /
+FaceShifter / DeepFakeDetection), and compression quality
+(c0 / c23 / c40).
 
 ================================================================
   END OF FILE DESCRIPTIONS
