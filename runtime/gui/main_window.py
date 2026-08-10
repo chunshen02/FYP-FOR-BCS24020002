@@ -36,7 +36,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
-from runtime.gui.dialogs import SaveSessionDialog
+from runtime.gui.dialogs import SaveSessionDialog, PracticeModeDialog
 from runtime.gui.gauge_widget import GaugeWidget
 from runtime.gui.window_affinity import apply_capture_exclusion
 from runtime.gui.face_thumbnail import FaceThumbnail
@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
         self._current_alert_active = False
         self._alert_count = 0
         self._status_state = "Idle"
+        self._degraded = False
         self._capture_exclusion_applied = False
         self._mini_mode = False
         self._full_mode_geometry = None
@@ -281,6 +282,17 @@ class MainWindow(QMainWindow):
         self._btn_mini_mode.setToolTip("Collapse to a small always-on-top bar so the meeting window stays visible")
         self._btn_mini_mode.clicked.connect(self._toggle_mini_mode)
         control_bar.addWidget(self._btn_mini_mode)
+
+        # Practice Mode — blind Real/Fake guessing on pre-loaded clips for user-study
+        # pre-test/post-test comparisons. Fully separate from live detection.
+        self._btn_practice_mode = QPushButton("🎓 Practice Mode")
+        self._btn_practice_mode.setObjectName("btn_clear_zone")
+        self._btn_practice_mode.setFixedHeight(32)
+        self._btn_practice_mode.setToolTip(
+            "Blind-guess Real/Fake on pre-loaded clips, then compare against the tool's verdict"
+        )
+        self._btn_practice_mode.clicked.connect(self._on_open_practice_mode)
+        control_bar.addWidget(self._btn_practice_mode)
 
         control_bar.addStretch()
 
@@ -887,13 +899,14 @@ class MainWindow(QMainWindow):
         """
         Update the Status row dot + label in the Session info card.
 
-        state: one of "Idle", "Initializing", "Detecting", "Alert", "Stopping".
+        state: one of "Idle", "Initializing", "Detecting", "Alert", "Degraded", "Stopping".
         """
         configs = {
             "Idle":         ("#6B7280", "#9CA3AF", "Idle"),
             "Initializing": ("#F59E0B", "#FBBF24", "Initializing…"),
             "Detecting":    ("#22C55E", "#4ADE80", "Active"),
             "Alert":        ("#EF4444", "#F87171", "Alert"),
+            "Degraded":     ("#F59E0B", "#FBBF24", "Degraded — Reconnecting"),
             "Stopping":     ("#F59E0B", "#FBBF24", "Stopping…"),
         }
         dot_color, text_color, label = configs.get(state, configs["Idle"])
@@ -921,6 +934,7 @@ class MainWindow(QMainWindow):
         self._frame_count = 0
         self._current_alert_active = False
         self._alert_count = 0
+        self._degraded = False
 
         # Hide alert card
         self._alert_card.setVisible(False)
@@ -959,6 +973,7 @@ class MainWindow(QMainWindow):
         self._detection_worker.error_occurred.connect(self._on_error)
         self._detection_worker.low_light_warning.connect(self._on_low_light_warning)
         self._detection_worker.face_count_update.connect(self._on_face_count_update)
+        self._detection_worker.degraded_mode.connect(self._on_degraded_mode)
 
         # Alert thread
         self._alert_thread = AlertThread()
@@ -1054,11 +1069,20 @@ class MainWindow(QMainWindow):
         self._session_log_event("INFO", f"Screenshot saved: {filename}")
 
     @pyqtSlot()
+    def _on_open_practice_mode(self):
+        """Open the Practice Mode dialog for blind Real/Fake guessing against pre-loaded clips."""
+        if self._shared_detector is None or self._shared_engine is None:
+            self._session_log_event("INFO", "Practice Mode: still initializing, try again in a moment.")
+            return
+        dialog = PracticeModeDialog(self._shared_detector, self._shared_engine, parent=self)
+        dialog.exec()
+
+    @pyqtSlot()
     def _on_acknowledge_alert(self):
         """Acknowledge the current alert."""
         self._alert_card.setVisible(False)
         self._current_alert_active = False
-        if self._session_active:
+        if self._session_active and not self._degraded:
             self._set_status("Detecting")
         self._session_log_event("DISMISS", "Alert acknowledged.")
         db_log_event("DISMISS", "Alert acknowledged.")
@@ -1125,6 +1149,17 @@ class MainWindow(QMainWindow):
         if self._low_light_bar.isVisible() != is_low_light:
             self._low_light_bar.setVisible(is_low_light)
 
+    @pyqtSlot(bool)
+    def _on_degraded_mode(self, is_degraded: bool):
+        """Reflect BitMind API connectivity issues without stopping the session."""
+        self._degraded = is_degraded
+        if is_degraded:
+            self._set_status("Degraded")
+            self._session_log_event("ERROR", "BitMind API unreachable — detection degraded.")
+        elif self._session_active and not self._current_alert_active:
+            self._set_status("Detecting")
+            self._session_log_event("INFO", "BitMind API connection recovered.")
+
     @pyqtSlot(int, int)
     def _on_face_count_update(self, shown: int, total: int):
         if shown == 0:
@@ -1159,7 +1194,7 @@ class MainWindow(QMainWindow):
         """Handle alert dismissal from alert thread."""
         self._alert_card.setVisible(False)
         self._current_alert_active = False
-        if self._session_active:
+        if self._session_active and not self._degraded:
             self._set_status("Detecting")
         self._session_log_event("DISMISS", "Alert dismissed automatically.")
         db_log_event("DISMISS", "Alert dismissed automatically.")

@@ -26,46 +26,133 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 from runtime.capture.screen_capture import ScreenCapture
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
-from runtime.detection.inference import DeepfakeInferenceEngine
+from runtime.detection.inference import DeepfakeInferenceEngine, BitmindAPIError, BitmindAuthError
 from runtime.detection.explainer import analyze_artifacts
+from runtime.storage.database import log_event as db_log_event
 import config
 
 _FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
 
 
-class _FaceTracker:
-    """Assigns stable IDs to faces across frames using bbox centre proximity."""
+def _centroid(box: dict) -> tuple:
+    return (box["x"] + box["w"] / 2, box["y"] + box["h"] / 2)
 
-    _MAX_DIST = 50  # pixels; faces whose centres move ≤ this are the same person
+
+def _iou(a: dict, b: dict) -> float:
+    """Intersection-over-union of two {'x','y','w','h'} boxes."""
+    ax1, ay1, ax2, ay2 = a["x"], a["y"], a["x"] + a["w"], a["y"] + a["h"]
+    bx1, by1, bx2, by2 = b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    intersection = (ix2 - ix1) * (iy2 - iy1)
+    union = a["w"] * a["h"] + b["w"] * b["h"] - intersection
+    return intersection / union if union > 0 else 0.0
+
+
+def match_tracks(tracks: dict, bboxes: list, max_dist: float,
+                  iou_threshold: float, grace_frames: int) -> tuple:
+    """
+    Match bboxes to existing tracks: highest-IoU-above-threshold first
+    (robust to fast movement, since box overlap survives large centroid
+    jumps), nearest-centroid-within-max_dist fallback for boxes with no
+    overlap. Pure function — no Qt/PyQt dependency — so it is independently
+    testable outside the QThread pipeline.
+
+    Args:
+        tracks: face_id -> {"bbox": {"x","y","w","h"}, "missed": int}
+        bboxes: list of {"x","y","w","h"} dicts for faces in the current frame
+
+    Returns:
+        (matched_ids, survivors)
+        matched_ids: list[str | None], parallel to bboxes — None means the
+            caller must assign a new id for that bbox.
+        survivors: tracks to carry into the next frame — matched tracks
+            reset to missed=0 with the new bbox; unmatched tracks age by
+            one frame and are evicted once missed exceeds grace_frames,
+            keeping a face's identity (and cached result) alive across a
+            brief occlusion instead of forcing a fresh re-classification.
+    """
+    used_ids: set = set()
+    matched_ids: list = [None] * len(bboxes)
+
+    # Pass 1: IoU, strongest overlap first across all (bbox, track) pairs,
+    # so no bbox claims a weak match before a stronger one elsewhere is seen.
+    iou_candidates = sorted(
+        (
+            (_iou(bbox, track["bbox"]), i, tid)
+            for i, bbox in enumerate(bboxes)
+            for tid, track in tracks.items()
+            if _iou(bbox, track["bbox"]) >= iou_threshold
+        ),
+        key=lambda c: c[0], reverse=True,
+    )
+    for _, i, tid in iou_candidates:
+        if matched_ids[i] is not None or tid in used_ids:
+            continue
+        matched_ids[i] = tid
+        used_ids.add(tid)
+
+    # Pass 2: nearest-centroid fallback for bboxes with no IoU overlap
+    for i, bbox in enumerate(bboxes):
+        if matched_ids[i] is not None:
+            continue
+        cx, cy = _centroid(bbox)
+        best_id, best_dist = None, max_dist
+        for tid, track in tracks.items():
+            if tid in used_ids:
+                continue
+            tcx, tcy = _centroid(track["bbox"])
+            dist = ((cx - tcx) ** 2 + (cy - tcy) ** 2) ** 0.5
+            if dist < best_dist:
+                best_dist, best_id = dist, tid
+        if best_id is not None:
+            matched_ids[i] = best_id
+            used_ids.add(best_id)
+
+    survivors = {}
+    for i, tid in enumerate(matched_ids):
+        if tid is not None:
+            survivors[tid] = {"bbox": bboxes[i], "missed": 0}
+    for tid, track in tracks.items():
+        if tid in survivors:
+            continue
+        missed = track["missed"] + 1
+        if missed <= grace_frames:
+            survivors[tid] = {"bbox": track["bbox"], "missed": missed}
+
+    return matched_ids, survivors
+
+
+class _FaceTracker:
+    """Assigns stable IDs to faces across frames, tolerating brief occlusion via a grace period."""
 
     def __init__(self):
-        self._tracks: dict = {}   # face_id -> (cx, cy)
+        self._tracks: dict = {}   # face_id -> {"bbox": dict, "missed": int}
         self._counter: int = 0
 
     def update(self, bboxes: list) -> list:
         """Match bboxes to existing tracks; assign new IDs to unmatched faces."""
-        centers = [(b["x"] + b["w"] // 2, b["y"] + b["h"] // 2) for b in bboxes]
-        new_tracks: dict = {}
-        used_ids: set = set()
-        ids: list = []
+        matched_ids, survivors = match_tracks(
+            self._tracks, bboxes,
+            config.FACE_TRACK_MAX_DIST_PX, config.FACE_TRACK_IOU_THRESHOLD, config.FACE_TRACK_GRACE_FRAMES,
+        )
 
-        for cx, cy in centers:
-            best_id, best_dist = None, self._MAX_DIST
-            for tid, (tx, ty) in self._tracks.items():
-                if tid in used_ids:
-                    continue
-                dist = ((cx - tx) ** 2 + (cy - ty) ** 2) ** 0.5
-                if dist < best_dist:
-                    best_dist, best_id = dist, tid
-            if best_id is None:
-                best_id = f"f{self._counter}"
+        ids = []
+        for i, tid in enumerate(matched_ids):
+            if tid is None:
+                tid = f"f{self._counter}"
                 self._counter += 1
-            used_ids.add(best_id)
-            new_tracks[best_id] = (cx, cy)
-            ids.append(best_id)
+                survivors[tid] = {"bbox": bboxes[i], "missed": 0}
+            ids.append(tid)
 
-        self._tracks = new_tracks
+        self._tracks = survivors
         return ids
+
+    def alive_ids(self) -> set:
+        """IDs currently tracked, including those still within their grace period after going undetected."""
+        return set(self._tracks.keys())
 
 
 class DetectionWorker(QThread):
@@ -86,6 +173,7 @@ class DetectionWorker(QThread):
     error_occurred = pyqtSignal(str)
     low_light_warning = pyqtSignal(bool)
     face_count_update = pyqtSignal(int, int)   # (shown, total_detected)
+    degraded_mode = pyqtSignal(bool)           # True when the BitMind API is unreachable
 
     def __init__(self, region: dict = None, face_detector=None, engine=None, parent=None):
         super().__init__(parent)
@@ -217,25 +305,20 @@ class DetectionWorker(QThread):
 
                 bboxes = [b for _, b in face_crops]
                 face_ids = tracker.update(bboxes)
+                alive_ids = tracker.alive_ids()  # includes ghosts within their grace window
 
-                active_ids = set(face_ids)
-                if face_crops:
-                    with self._pending_lock:
+                with self._pending_lock:
+                    if face_crops:
                         for (crop, bbox), fid in zip(face_crops, face_ids):
                             jpeg_bytes, resized_bgr = preprocessor.process_with_array(crop)
                             self._pending_faces[fid] = (jpeg_bytes, bbox, resized_bgr)
-                        self._pending_faces = {
-                            k: v for k, v in self._pending_faces.items() if k in active_ids
-                        }
-                    with self._result_lock:
-                        self._cached_results = {
-                            k: v for k, v in self._cached_results.items() if k in active_ids
-                        }
-                else:
-                    with self._pending_lock:
-                        self._pending_faces.clear()
-                    with self._result_lock:
-                        self._cached_results.clear()
+                    self._pending_faces = {
+                        k: v for k, v in self._pending_faces.items() if k in alive_ids
+                    }
+                with self._result_lock:
+                    self._cached_results = {
+                        k: v for k, v in self._cached_results.items() if k in alive_ids
+                    }
 
                 with self._result_lock:
                     results = []
@@ -274,8 +357,14 @@ class DetectionWorker(QThread):
     def _api_loop(self, engine: DeepfakeInferenceEngine):
         """
         Daemon thread: round-robin through pending face crops, calling the
-        BitMind API once per face per cycle (rate limit enforced inside engine).
+        BitMind API once per face per cycle (rate limit + retries enforced
+        inside the engine). Tracks consecutive failures across cycles so a
+        struggling connection surfaces as Degraded rather than crashing the
+        thread or silently corrupting cached results.
         """
+        consecutive_failures = 0
+        degraded = False
+
         while self._running:
             with self._pending_lock:
                 if self._pending_faces:
@@ -293,7 +382,22 @@ class DetectionWorker(QThread):
                 time.sleep(0.05)
                 continue
 
-            result = engine.run_single(jpeg_bytes, bbox, face_id)
+            try:
+                result = engine.run_single(jpeg_bytes, bbox, face_id)
+            except BitmindAuthError as e:
+                # An invalid/revoked key never self-heals via retry — escalate immediately.
+                consecutive_failures = config.BITMIND_DEGRADED_FAILURE_THRESHOLD
+                degraded = self._report_api_failure(e, degraded, consecutive_failures)
+                continue
+            except BitmindAPIError as e:
+                consecutive_failures += 1
+                degraded = self._report_api_failure(e, degraded, consecutive_failures)
+                continue
+
+            if consecutive_failures or degraded:
+                consecutive_failures = 0
+                degraded = self._report_api_recovery(degraded)
+
             result.thumbnail = resized_bgr  # exact crop that was analyzed, for Mini mode display
 
             if result.risk_level == "DEEPFAKE" and config.EXPLANATION_ENABLED:
@@ -302,7 +406,29 @@ class DetectionWorker(QThread):
             with self._result_lock:
                 self._cached_results[face_id] = result
 
+            # Logged for every classification, not just alerts, so the raw
+            # P_fake distribution can support future FAKE_THRESHOLD recalibration.
+            db_log_event(
+                "CLASSIFICATION", detail=f"face={face_id} risk={result.risk_level}",
+                peak_confidence=result.p_fake_raw, api_response_ms=result.api_response_ms,
+            )
+
             self.api_response_update.emit(result.api_response_ms)
+
+    def _report_api_failure(self, error: Exception, was_degraded: bool, consecutive_failures: int) -> bool:
+        """Emit/log a Degraded transition once BITMIND_DEGRADED_FAILURE_THRESHOLD consecutive failures are reached."""
+        is_degraded = consecutive_failures >= config.BITMIND_DEGRADED_FAILURE_THRESHOLD
+        if is_degraded and not was_degraded:
+            db_log_event("ERROR", "BitMind API unreachable — detection degraded.")
+            self.degraded_mode.emit(True)
+        return is_degraded
+
+    def _report_api_recovery(self, was_degraded: bool) -> bool:
+        """Emit/log recovery once the API responds successfully again after a Degraded period."""
+        if was_degraded:
+            db_log_event("INFO", "BitMind API connection recovered.")
+            self.degraded_mode.emit(False)
+        return False
 
     def set_exclusion_region(self, rect: tuple | None):
         """Set a screen region (x, y, w, h) in physical pixels to blank before detection."""

@@ -27,6 +27,22 @@ import config
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
 
+class BitmindAPIError(Exception):
+    """Base class for all BitMind API failures."""
+
+
+class BitmindAuthError(BitmindAPIError):
+    """Invalid or revoked API key (HTTP 401/403) — never retried."""
+
+
+class BitmindRateLimitError(BitmindAPIError):
+    """Rate limit exceeded (HTTP 429) — distinct from a transient failure, not retried inline."""
+
+
+class BitmindTransientError(BitmindAPIError):
+    """Timeout, connection error, or server error (5xx) — retried with backoff."""
+
+
 @dataclass
 class FaceResult:
     """Holds inference results for a single detected face."""
@@ -59,7 +75,7 @@ class DeepfakeInferenceEngine:
         self._last_call_time: float = 0.0
 
     def run_single(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
-        """Submit one face crop to the BitMind API and return its result."""
+        """Submit one face crop to the BitMind API and return its result. Raises BitmindAPIError on failure."""
         p_fake_raw, api_ms = self._call_api(jpeg_bytes)
         return FaceResult(
             p_fake_raw=p_fake_raw,
@@ -69,20 +85,26 @@ class DeepfakeInferenceEngine:
             last_updated=time.perf_counter(),
         )
 
-    def _call_api(self, jpeg_bytes: bytes) -> tuple:
-        """
-        Submit one JPEG image to the BitMind API.
-
-        Enforces the 1 request/second rate limit on the free tier.
-
-        Returns:
-            (p_fake_raw: float, api_response_ms: float)
-        """
+    def _throttle(self):
+        """Sleep as needed to enforce the 1 request/second rate limit on the free tier."""
         now = time.perf_counter()
         elapsed = now - self._last_call_time
         if elapsed < config.BITMIND_RATE_LIMIT_DELAY_SEC:
             time.sleep(config.BITMIND_RATE_LIMIT_DELAY_SEC - elapsed)
 
+    def _post_once(self, jpeg_bytes: bytes) -> tuple:
+        """
+        Perform a single HTTP attempt against the BitMind API.
+
+        Raises BitmindAuthError/BitmindRateLimitError immediately (not
+        retryable); raises BitmindTransientError for timeout, connection
+        error, or 5xx (retryable by the caller); raises BitmindAPIError
+        for any other failure.
+
+        Returns:
+            (p_fake_raw: float, api_response_ms: float)
+        """
+        self._throttle()
         t_start = time.perf_counter()
         try:
             b64 = base64.b64encode(jpeg_bytes).decode("utf-8")
@@ -91,33 +113,54 @@ class DeepfakeInferenceEngine:
                 json={"image": f"data:image/jpeg;base64,{b64}"},
                 timeout=config.BITMIND_API_TIMEOUT_SEC
             )
-            t_end = time.perf_counter()
-            api_ms = (t_end - t_start) * 1000
-            self._last_call_time = t_end
-
-            if response.status_code == 200:
-                data = response.json()
-                is_ai = data.get("isAI", False)
-                confidence = float(data.get("confidence", 0.0))
-                p_fake = confidence if is_ai else 1.0 - confidence
-                return p_fake, api_ms
-            else:
-                print(f"[WARNING] BitMind API returned status {response.status_code}: {response.text}")
-                return 0.0, api_ms
-
-        except requests.exceptions.Timeout:
-            t_end = time.perf_counter()
-            api_ms = (t_end - t_start) * 1000
-            self._last_call_time = t_end
-            print(f"[WARNING] BitMind API request timed out after {config.BITMIND_API_TIMEOUT_SEC}s")
-            return 0.0, api_ms
-
+        except requests.exceptions.Timeout as e:
+            self._last_call_time = time.perf_counter()
+            raise BitmindTransientError(f"Request timed out after {config.BITMIND_API_TIMEOUT_SEC}s") from e
+        except requests.exceptions.ConnectionError as e:
+            # Covers both DNS failure and connection refused — requests wraps both here.
+            self._last_call_time = time.perf_counter()
+            raise BitmindTransientError(f"Connection error: {e}") from e
         except requests.exceptions.RequestException as e:
-            t_end = time.perf_counter()
-            api_ms = (t_end - t_start) * 1000
-            self._last_call_time = t_end
-            print(f"[WARNING] BitMind API request failed: {e}")
-            return 0.0, api_ms
+            self._last_call_time = time.perf_counter()
+            raise BitmindAPIError(f"Request failed: {e}") from e
+
+        t_end = time.perf_counter()
+        api_ms = (t_end - t_start) * 1000
+        self._last_call_time = t_end
+
+        if response.status_code == 200:
+            data = response.json()
+            is_ai = data.get("isAI", False)
+            confidence = float(data.get("confidence", 0.0))
+            p_fake = confidence if is_ai else 1.0 - confidence
+            return p_fake, api_ms
+        if response.status_code in (401, 403):
+            raise BitmindAuthError(f"Authentication failed (HTTP {response.status_code}): {response.text}")
+        if response.status_code == 429:
+            raise BitmindRateLimitError(f"Rate limit exceeded (HTTP 429): {response.text}")
+        if response.status_code >= 500:
+            raise BitmindTransientError(f"Server error (HTTP {response.status_code}): {response.text}")
+        raise BitmindAPIError(f"Unexpected HTTP {response.status_code}: {response.text}")
+
+    def _call_api(self, jpeg_bytes: bytes) -> tuple:
+        """
+        Submit one JPEG image to the BitMind API, retrying only transient
+        failures (timeout, connection error, 5xx) with exponential backoff.
+        Auth (401/403) and rate-limit (429) failures propagate immediately.
+
+        Returns:
+            (p_fake_raw: float, api_response_ms: float)
+        """
+        delays = [0.0] + config.BITMIND_RETRY_DELAYS_SEC
+        last_error = None
+        for delay in delays:
+            if delay:
+                time.sleep(delay)
+            try:
+                return self._post_once(jpeg_bytes)
+            except BitmindTransientError as e:
+                last_error = e
+        raise last_error
 
     def close(self):
         """Close the underlying HTTP session."""

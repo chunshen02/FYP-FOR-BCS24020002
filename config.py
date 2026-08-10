@@ -9,6 +9,8 @@ MODEL_NAME = "bitmind_api"
 BITMIND_API_ENDPOINT = "https://api.bitmind.ai/detect-image"
 BITMIND_API_TIMEOUT_SEC = 10          # HTTP request timeout in seconds
 BITMIND_RATE_LIMIT_DELAY_SEC = 1.0    # Minimum seconds between API calls (1 req/sec free tier)
+BITMIND_RETRY_DELAYS_SEC = [1.0, 2.0, 4.0]   # Exponential backoff for transient (timeout/conn/5xx) failures
+BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive failures before Degraded status; auth errors bypass this
 
 # ── Face Detection ─────────────────────────────────────────────────────────────
 FACE_CONFIDENCE_THRESHOLD = 0.2       # MediaPipe BlazeFace detection confidence
@@ -17,11 +19,20 @@ ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if excee
 DETECTION_UPSCALE = 2.0               # Upscale factor applied to frame before BlazeFace (helps small faces)
 MAX_FACES = 3                         # Analyze at most this many faces per frame (largest first)
 
+# ── Multi-Face Tracking ────────────────────────────────────────────────────────
+FACE_TRACK_MAX_DIST_PX = 50           # Centroid-distance fallback threshold (pixels) for matching
+FACE_TRACK_IOU_THRESHOLD = 0.3        # Min IoU to consider two boxes across frames the same face
+FACE_TRACK_GRACE_FRAMES = 5           # Frames a track survives with no matching bbox (~333ms at DISPLAY_FPS=15)
+
 # ── Face Crop Preparation ──────────────────────────────────────────────────────
 FACE_CROP_JPEG_QUALITY = 85           # JPEG quality for API submission (0-100)
 FACE_CROP_SIZE = 224                  # Resize face crop to this square size before API submission
 
 # ── Inference & Scoring ────────────────────────────────────────────────────────
+# FAKE_THRESHOLD was calibrated in FYP1 on a small sample (n=3 deepfake, n=10
+# real) — see PERFORMANCE_RESULTS.txt Table 4/5. Every classification is now
+# logged with its raw P_fake score (see database.get_score_distribution) so
+# this can be recalibrated against a larger, more diverse sample in FYP2.
 FAKE_THRESHOLD = 0.70                 # P_fake >= 0.70 → DEEPFAKE; below → REAL
 EMA_ALPHA = 0.2                       # Exponential moving average smoothing factor
                                       # Smoothed score used for display only.
@@ -44,6 +55,12 @@ TARGET_RAM_MB = 800                   # Maximum peak RAM usage (MB)
 BENCHMARK_WARMUP_SECONDS = 30
 BENCHMARK_MEASURE_SECONDS = 60
 BENCHMARK_REPEAT = 3
+
+# ── Offline Batch Evaluation (evaluation_runner.py) ─────────────────────────────
+EVAL_FRAMES_PER_VIDEO = 5             # Frames sampled per video clip during batch evaluation
+
+# ── Practice Mode (user study pre-test/post-test) ───────────────────────────────
+PRACTICE_CLIPS_DIR = os.path.join(BASE_DIR, "practice_clips")  # real/ and deepfake/ subfolders of video clips
 
 # ── Low-Light Handling ────────────────────────────────────────────────────────
 LOW_LIGHT_THRESHOLD = 40              # Frame mean brightness (0-255) below which low-light mode activates
