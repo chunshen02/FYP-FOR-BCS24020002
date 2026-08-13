@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import pyqtSlot, Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QColor, QFont, QIcon, QPixmap, QPainter, QPainterPath, QPen, QBrush
 import numpy as np
+import cv2
+import mss
 import sys
 import os
 
@@ -38,7 +40,12 @@ from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
 from runtime.gui.dialogs import SaveSessionDialog
 from runtime.gui.gauge_widget import GaugeWidget
-from runtime.gui.window_affinity import apply_capture_exclusion
+from runtime.capture.window_affinity import (
+    apply_capture_exclusion,
+    clear_capture_exclusion,
+    restore_capture_exclusion,
+    capture_affinity_lock,
+)
 from runtime.gui.face_thumbnail import FaceThumbnail
 from runtime.threads.detection_worker import DetectionWorker
 from runtime.threads.alert_thread import AlertThread
@@ -91,7 +98,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Real-Time Deepfake Detection System")
         self.setWindowIcon(_build_shield_icon())
-        self.setMinimumSize(900, 680)
+        self.setMinimumSize(820, 600)
         self.setStyleSheet(self._get_stylesheet())
 
         # State
@@ -105,6 +112,7 @@ class MainWindow(QMainWindow):
         self._status_state = "Idle"
         self._degraded = False
         self._capture_exclusion_applied = False
+        self._capture_affinity_value = None   # WDA_* constant actually applied, for temporary clear/restore
         self._mini_mode = False
         self._full_mode_geometry = None
 
@@ -132,23 +140,24 @@ class MainWindow(QMainWindow):
         
         # Main layout: padded so cards have breathing room from the window edge
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(20, 16, 20, 12)
-        root_layout.setSpacing(14)
+        root_layout.setContentsMargins(14, 10, 14, 8)
+        root_layout.setSpacing(10)
 
         # --- TOP SECTION: LEFT PANEL (video) + RIGHT PANEL (cards) ---
         top_splitter = QSplitter(Qt.Orientation.Horizontal)
-        top_splitter.setHandleWidth(14)
+        top_splitter.setHandleWidth(10)
 
         # LEFT PANEL: Video Feed + Controls
         self._left_panel = self._build_left_panel()
         self._video_widget.region_selected.connect(self._on_region_selected)
+        self._video_widget.recheck_requested.connect(self._on_recheck_requested)
         top_splitter.addWidget(self._left_panel)
-        top_splitter.setStretchFactor(0, 60)
+        top_splitter.setStretchFactor(0, 55)
 
         # RIGHT PANEL: Info Cards
         right_panel = self._build_right_panel()
         top_splitter.addWidget(right_panel)
-        top_splitter.setStretchFactor(1, 40)
+        top_splitter.setStretchFactor(1, 45)
         self._top_splitter = top_splitter
 
         root_layout.addWidget(top_splitter, stretch=1)
@@ -161,21 +170,21 @@ class MainWindow(QMainWindow):
 
         # Header row: title + delete buttons
         history_header = QHBoxLayout()
-        history_header.setContentsMargins(8, 8, 8, 4)
-        history_header.setSpacing(8)
+        history_header.setContentsMargins(8, 6, 8, 3)
+        history_header.setSpacing(6)
         history_title = QLabel("Session History")
-        history_title.setStyleSheet("color: #888; font-size: 11px;")
+        history_title.setStyleSheet("color: #888; font-size: 10px;")
         history_header.addWidget(history_title)
         history_header.addStretch()
         self._btn_delete_session = QPushButton("Delete Selected")
         self._btn_delete_session.setObjectName("btn_delete_session")
-        self._btn_delete_session.setFixedHeight(24)
+        self._btn_delete_session.setFixedHeight(20)
         self._btn_delete_session.setEnabled(False)
         self._btn_delete_session.clicked.connect(self._on_delete_selected_session)
         history_header.addWidget(self._btn_delete_session)
         self._btn_clear_history = QPushButton("Clear All")
         self._btn_clear_history.setObjectName("btn_clear_history")
-        self._btn_clear_history.setFixedHeight(24)
+        self._btn_clear_history.setFixedHeight(20)
         self._btn_clear_history.clicked.connect(self._on_clear_all_sessions)
         history_header.addWidget(self._btn_clear_history)
         history_layout.addLayout(history_header)
@@ -194,17 +203,17 @@ class MainWindow(QMainWindow):
         left_container = QWidget()
         left_layout = QVBoxLayout(left_container)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
+        left_layout.setSpacing(6)
 
         # "LIVE PREVIEW" section header with a small green status dot
         preview_header = QHBoxLayout()
-        preview_header.setSpacing(6)
+        preview_header.setSpacing(5)
         live_dot = QLabel("●")
-        live_dot.setStyleSheet("color: #22C55E; font-size: 9px;")
+        live_dot.setStyleSheet("color: #22C55E; font-size: 8px;")
         preview_header.addWidget(live_dot)
         preview_label = QLabel("LIVE PREVIEW")
         preview_label.setStyleSheet(
-            "color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 1px;"
+            "color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 1px;"
         )
         preview_header.addWidget(preview_label)
         preview_header.addStretch()
@@ -216,14 +225,14 @@ class MainWindow(QMainWindow):
         video_frame_layout = QVBoxLayout(video_frame)
         video_frame_layout.setContentsMargins(2, 2, 2, 2)
         self._video_widget = VideoWidget()
-        self._video_widget.setMinimumHeight(300)
+        self._video_widget.setMinimumHeight(260)
         video_frame_layout.addWidget(self._video_widget)
         left_layout.addWidget(video_frame, stretch=1)
 
         # Low-light warning bar (hidden until triggered)
         self._low_light_bar = QLabel("  Low light detected — detection accuracy may be reduced")
         self._low_light_bar.setStyleSheet(
-            "background-color: #5C3500; color: #FFCC66; font-size: 11px; padding: 3px 8px; border-radius: 6px;"
+            "background-color: #5C3500; color: #FFCC66; font-size: 10px; padding: 2px 6px; border-radius: 5px;"
         )
         self._low_light_bar.setVisible(False)
         left_layout.addWidget(self._low_light_bar)
@@ -237,8 +246,8 @@ class MainWindow(QMainWindow):
     def _build_control_bar(self) -> QHBoxLayout:
         """Build control bar with buttons."""
         control_bar = QHBoxLayout()
-        control_bar.setContentsMargins(12, 10, 12, 10)
-        control_bar.setSpacing(8)
+        control_bar.setContentsMargins(10, 8, 10, 8)
+        control_bar.setSpacing(6)
 
         # Style: add top border via stylesheet trick
         # (will be applied to buttons)
@@ -246,14 +255,14 @@ class MainWindow(QMainWindow):
         # Start button
         self._btn_start = QPushButton("▶ Start")
         self._btn_start.setObjectName("btn_start")
-        self._btn_start.setFixedHeight(32)
+        self._btn_start.setFixedHeight(28)
         self._btn_start.clicked.connect(self._on_start)
         control_bar.addWidget(self._btn_start)
 
         # Stop button
         self._btn_stop = QPushButton("◻ Stop")
         self._btn_stop.setObjectName("btn_stop")
-        self._btn_stop.setFixedHeight(32)
+        self._btn_stop.setFixedHeight(28)
         self._btn_stop.setEnabled(False)
         self._btn_stop.clicked.connect(self._on_stop)
         control_bar.addWidget(self._btn_stop)
@@ -261,14 +270,14 @@ class MainWindow(QMainWindow):
         # Screenshot button
         self._btn_screenshot = QPushButton("📷 Screenshot")
         self._btn_screenshot.setObjectName("btn_screenshot")
-        self._btn_screenshot.setFixedHeight(32)
+        self._btn_screenshot.setFixedHeight(28)
         self._btn_screenshot.clicked.connect(self._on_screenshot)
         control_bar.addWidget(self._btn_screenshot)
 
         # Clear Zone button — enabled only when a detection zone is active
         self._btn_clear_zone = QPushButton("✕ Clear Zone")
         self._btn_clear_zone.setObjectName("btn_clear_zone")
-        self._btn_clear_zone.setFixedHeight(32)
+        self._btn_clear_zone.setFixedHeight(28)
         self._btn_clear_zone.setEnabled(False)
         self._btn_clear_zone.setToolTip("Drag on the video to set a detection zone. Right-click to clear.")
         self._btn_clear_zone.clicked.connect(self._on_clear_zone)
@@ -278,7 +287,7 @@ class MainWindow(QMainWindow):
         # meeting window underneath stays visible during a call.
         self._btn_mini_mode = QPushButton("⛶ Mini Mode")
         self._btn_mini_mode.setObjectName("btn_clear_zone")
-        self._btn_mini_mode.setFixedHeight(32)
+        self._btn_mini_mode.setFixedHeight(28)
         self._btn_mini_mode.setToolTip("Collapse to a small always-on-top bar so the meeting window stays visible")
         self._btn_mini_mode.clicked.connect(self._toggle_mini_mode)
         control_bar.addWidget(self._btn_mini_mode)
@@ -289,10 +298,10 @@ class MainWindow(QMainWindow):
         fps_container = QHBoxLayout()
         fps_container.setSpacing(4)
         fps_icon = QLabel("FPS")
-        fps_icon.setStyleSheet("font-size: 11px; color: #666666;")
+        fps_icon.setStyleSheet("font-size: 10px; color: #666666;")
         self._fps_label = QLabel("—")
         self._fps_label.setStyleSheet(
-            "font-size: 12px; font-weight: 500; color: #aaaaaa; min-width: 28px;"
+            "font-size: 11px; font-weight: 500; color: #aaaaaa; min-width: 24px;"
         )
         fps_container.addWidget(fps_icon)
         fps_container.addWidget(self._fps_label)
@@ -306,10 +315,10 @@ class MainWindow(QMainWindow):
         faces_container = QHBoxLayout()
         faces_container.setSpacing(4)
         faces_icon = QLabel("Faces")
-        faces_icon.setStyleSheet("font-size: 11px; color: #666666;")
+        faces_icon.setStyleSheet("font-size: 10px; color: #666666;")
         self._faces_label = QLabel("—")
         self._faces_label.setStyleSheet(
-            "font-size: 12px; font-weight: 500; color: #aaaaaa; min-width: 20px;"
+            "font-size: 11px; font-weight: 500; color: #aaaaaa; min-width: 18px;"
         )
         faces_container.addWidget(faces_icon)
         faces_container.addWidget(self._faces_label)
@@ -419,8 +428,8 @@ class MainWindow(QMainWindow):
         """Build right panel with info cards."""
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
-        right_layout.setContentsMargins(12, 0, 0, 0)
-        right_layout.setSpacing(10)
+        right_layout.setContentsMargins(8, 0, 0, 0)
+        right_layout.setSpacing(8)
 
         # Mini Mode status/control bar (hidden unless in Mini mode)
         self._mini_bar = self._build_mini_bar()
@@ -452,17 +461,17 @@ class MainWindow(QMainWindow):
         log_card = self._log_card
         log_card.setObjectName("card")
         log_card_layout = QVBoxLayout(log_card)
-        log_card_layout.setContentsMargins(10, 12, 10, 10)
-        log_card_layout.setSpacing(6)
+        log_card_layout.setContentsMargins(8, 9, 8, 8)
+        log_card_layout.setSpacing(5)
 
         log_header = QHBoxLayout()
         log_title = QLabel("SYSTEM LOG")
-        log_title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+        log_title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
         log_header.addWidget(log_title)
         log_header.addStretch()
         self._btn_clear_log = QPushButton("Clear")
         self._btn_clear_log.setObjectName("btn_clear_log")
-        self._btn_clear_log.setFixedHeight(20)
+        self._btn_clear_log.setFixedHeight(18)
         self._btn_clear_log.clicked.connect(self._on_clear_log)
         log_header.addWidget(self._btn_clear_log)
         log_card_layout.addLayout(log_header)
@@ -471,7 +480,7 @@ class MainWindow(QMainWindow):
         self._session_log.setObjectName("session_log")
         log_card_layout.addWidget(self._session_log, stretch=1)
 
-        log_card.setMinimumHeight(160)
+        log_card.setMinimumHeight(130)
         right_layout.addWidget(log_card, stretch=1)
 
         # Card count is variable (alert card toggles, analysis reasons vary
@@ -489,17 +498,17 @@ class MainWindow(QMainWindow):
         card = QWidget()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 12, 10, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(8, 9, 8, 6)
+        layout.setSpacing(3)
 
         # Title row + info icon
         title_row = QHBoxLayout()
         title = QLabel("CONFIDENCE SCORE")
-        title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+        title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
         title_row.addWidget(title)
         title_row.addStretch()
         info_icon = QLabel("ⓘ")
-        info_icon.setStyleSheet("color: #4B5563; font-size: 12px;")
+        info_icon.setStyleSheet("color: #4B5563; font-size: 11px;")
         info_icon.setToolTip(
             "Confidence that the most suspicious face currently on screen is a deepfake, "
             "from the BitMind API's raw score (not smoothed)."
@@ -520,39 +529,39 @@ class MainWindow(QMainWindow):
         card = QWidget()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 12, 10, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(8, 9, 8, 9)
+        layout.setSpacing(6)
 
         # Title
         title_row = QHBoxLayout()
         icon = QLabel("🔍")
-        icon.setStyleSheet("font-size: 12px;")
+        icon.setStyleSheet("font-size: 11px;")
         title_row.addWidget(icon)
         title = QLabel("DETECTION ANALYSIS")
-        title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+        title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
         title_row.addWidget(title)
         title_row.addStretch()
         layout.addLayout(title_row)
 
         # Verdict row: colour-coded pill + confidence % + relative timestamp
         verdict_row = QHBoxLayout()
-        verdict_row.setSpacing(8)
+        verdict_row.setSpacing(6)
         self._analysis_verdict_badge = QLabel("")
-        self._analysis_verdict_badge.setFixedHeight(20)
+        self._analysis_verdict_badge.setFixedHeight(18)
         verdict_row.addWidget(self._analysis_verdict_badge)
         self._analysis_pct_label = QLabel("")
-        self._analysis_pct_label.setStyleSheet("color: #E5E7EB; font-size: 13px; font-weight: bold;")
+        self._analysis_pct_label.setStyleSheet("color: #E5E7EB; font-size: 12px; font-weight: bold;")
         verdict_row.addWidget(self._analysis_pct_label)
         verdict_row.addStretch()
         self._analysis_time_label = QLabel("")
-        self._analysis_time_label.setStyleSheet("color: #6B7280; font-size: 10px;")
+        self._analysis_time_label.setStyleSheet("color: #6B7280; font-size: 9px;")
         verdict_row.addWidget(self._analysis_time_label)
         layout.addLayout(verdict_row)
 
         # Empty-state placeholder, shown until the first result arrives
         self._analysis_empty_label = QLabel("No analysis yet — start detection to see results.")
         self._analysis_empty_label.setWordWrap(True)
-        self._analysis_empty_label.setStyleSheet("color: #6B7280; font-size: 11px; font-style: italic;")
+        self._analysis_empty_label.setStyleSheet("color: #6B7280; font-size: 10px; font-style: italic;")
         layout.addWidget(self._analysis_empty_label)
 
         # Fixed pool of bullet rows (max reasons a DEEPFAKE result can carry
@@ -561,13 +570,13 @@ class MainWindow(QMainWindow):
         self._analysis_bullet_rows = []
         for _ in range(self._ANALYSIS_MAX_REASONS):
             row_layout = QHBoxLayout()
-            row_layout.setSpacing(6)
+            row_layout.setSpacing(5)
             bullet_icon = QLabel("●")
             bullet_icon.setStyleSheet("color: #4B5563; font-size: 7px;")
-            bullet_icon.setFixedWidth(10)
+            bullet_icon.setFixedWidth(9)
             bullet_text = QLabel("")
             bullet_text.setWordWrap(True)
-            bullet_text.setStyleSheet("color: #C4C9D4; font-size: 11px;")
+            bullet_text.setStyleSheet("color: #C4C9D4; font-size: 10px;")
             row_layout.addWidget(bullet_icon, 0, Qt.AlignmentFlag.AlignTop)
             row_layout.addWidget(bullet_text, 1)
             layout.addLayout(row_layout)
@@ -601,8 +610,8 @@ class MainWindow(QMainWindow):
         badge_bg, badge_fg = ("#EF4444", "#2D0A0A") if is_fake else ("#22C55E", "#052E16")
         self._analysis_verdict_badge.setText(f"  {result.risk_level}  ")
         self._analysis_verdict_badge.setStyleSheet(
-            f"background-color: {badge_bg}; color: {badge_fg}; font-size: 10px; "
-            f"font-weight: bold; border-radius: 10px;"
+            f"background-color: {badge_bg}; color: {badge_fg}; font-size: 9px; "
+            f"font-weight: bold; border-radius: 9px;"
         )
         self._analysis_pct_label.setText(f"{result.p_fake_raw * 100:.1f}%")
 
@@ -626,16 +635,16 @@ class MainWindow(QMainWindow):
         card = QWidget()
         card.setObjectName("alert_card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 12, 10, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 9, 8, 9)
+        layout.setSpacing(8)
 
         # Header
         header_layout = QHBoxLayout()
         icon_label = QLabel("⚠")
-        icon_label.setStyleSheet("color: #F59E0B; font-size: 14px;")
+        icon_label.setStyleSheet("color: #F59E0B; font-size: 13px;")
         header_label = QLabel("Deepfake detected")
         header_label.setStyleSheet(
-            "color: #FBBF24; font-size: 12px; font-weight: bold;"
+            "color: #FBBF24; font-size: 11px; font-weight: bold;"
         )
         header_layout.addWidget(icon_label)
         header_layout.addWidget(header_label)
@@ -646,7 +655,7 @@ class MainWindow(QMainWindow):
         # above this one — this banner is just the dismissible action prompt.
         hint_label = QLabel("See Detection Analysis above for the full reasoning.")
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet("color: #D8B675; font-size: 11px;")
+        hint_label.setStyleSheet("color: #D8B675; font-size: 10px;")
         layout.addWidget(hint_label)
 
         # Acknowledge button
@@ -661,18 +670,18 @@ class MainWindow(QMainWindow):
     def _build_info_row(icon: str, label_text: str) -> tuple:
         """Build an [icon] Label ... Value row for the session info card. Returns (layout, value_label)."""
         row_layout = QHBoxLayout()
-        row_layout.setContentsMargins(0, 7, 0, 7)
-        row_layout.setSpacing(8)
+        row_layout.setContentsMargins(0, 5, 0, 5)
+        row_layout.setSpacing(6)
         icon_label = QLabel(icon)
-        icon_label.setStyleSheet("color: #4B5563; font-size: 12px;")
-        icon_label.setFixedWidth(16)
+        icon_label.setStyleSheet("color: #4B5563; font-size: 11px;")
+        icon_label.setFixedWidth(14)
         row_layout.addWidget(icon_label)
         label = QLabel(label_text)
-        label.setStyleSheet("color: #888; font-size: 11px;")
+        label.setStyleSheet("color: #888; font-size: 10px;")
         row_layout.addWidget(label)
         row_layout.addStretch()
         value = QLabel("")
-        value.setStyleSheet("color: #E5E7EB; font-size: 11px;")
+        value.setStyleSheet("color: #E5E7EB; font-size: 10px;")
         row_layout.addWidget(value)
         return row_layout, value
 
@@ -681,12 +690,12 @@ class MainWindow(QMainWindow):
         card = QWidget()
         card.setObjectName("card")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(10, 12, 10, 12)
+        layout.setContentsMargins(8, 9, 8, 9)
         layout.setSpacing(0)
 
         # Title
         title = QLabel("SESSION INFO")
-        title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 6px;")
+        title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px;")
         layout.addWidget(title)
 
         status_row, self._status_value = self._build_info_row("👤", "Status")
@@ -742,7 +751,7 @@ class MainWindow(QMainWindow):
         )
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        table.setFixedHeight(150)
+        table.setFixedHeight(120)
 
         return table
 
@@ -751,7 +760,7 @@ class MainWindow(QMainWindow):
         status_bar = self.statusBar()
         status_bar.clearMessage()
         status_bar.setStyleSheet(
-            "background-color: #0B0E14; color: #6B7280; font-size: 11px; border-top: 1px solid #1F2430;"
+            "background-color: #0B0E14; color: #6B7280; font-size: 10px; border-top: 1px solid #1F2430;"
         )
 
         def _sep() -> QLabel:
@@ -840,8 +849,8 @@ class MainWindow(QMainWindow):
                     background-color: #FCEBEB;
                     color: #A32D2D;
                     border-radius: 3px;
-                    padding: 2px 8px;
-                    font-size: 11px;
+                    padding: 1px 6px;
+                    font-size: 10px;
                     font-weight: 500;
                 """
                 )
@@ -851,8 +860,8 @@ class MainWindow(QMainWindow):
                     background-color: #EAF3DE;
                     color: #3B6D11;
                     border-radius: 3px;
-                    padding: 2px 8px;
-                    font-size: 11px;
+                    padding: 1px 6px;
+                    font-size: 10px;
                     font-weight: 500;
                 """
                 )
@@ -904,7 +913,7 @@ class MainWindow(QMainWindow):
             f"<span style='color:{dot_color};'>●</span> "
             f"<span style='color:{text_color};'>{label}</span>"
         )
-        self._status_value.setStyleSheet("font-size: 11px;")
+        self._status_value.setStyleSheet("font-size: 10px;")
 
         # Keep the Mini mode bar's status readout in sync too
         self._mini_status_dot.setStyleSheet(f"color: {dot_color}; font-size: 10px;")
@@ -971,7 +980,7 @@ class MainWindow(QMainWindow):
 
         # Wire detection results to alert thread
         self._detection_worker.frame_ready.connect(
-            lambda frame, results, pending: self._alert_thread.push_results(results)
+            lambda frame, results, pending, rechecking: self._alert_thread.push_results(results)
         )
 
         self._alert_thread.start()
@@ -1044,17 +1053,35 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_screenshot(self):
-        """Save the current video frame as a PNG to the screenshots folder."""
-        pixmap = self._video_widget.grab_screenshot()
-        if pixmap is None:
+        """
+        Save a full-screen PNG (this app's own window and its detection
+        overlay included, plus whatever else is on screen) to the
+        screenshots folder — evidence of what was actually seen, not just
+        the video feed. Briefly lifts this window's capture exclusion,
+        under capture_affinity_lock so DetectionWorker's live capture loop
+        can never overlap that window and pick up the un-excluded app.
+        """
+        if self._video_widget.grab_screenshot() is None:
             self._session_log_event("INFO", "Screenshot skipped: no active feed.")
             return
+
+        hwnd = int(self.winId())
+        with capture_affinity_lock:
+            cleared = self._capture_affinity_value is not None and clear_capture_exclusion(hwnd)
+            try:
+                with mss.mss() as sct:
+                    monitor = sct.monitors[1]  # primary monitor — same scope DetectionWorker defaults to
+                    shot = np.asarray(sct.grab(monitor))[:, :, :3]  # BGRA -> BGR
+            finally:
+                if cleared:
+                    restore_capture_exclusion(hwnd, self._capture_affinity_value)
+
         screenshots_dir = os.path.join(config.BASE_DIR, "screenshots")
         os.makedirs(screenshots_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"screenshot_{timestamp}.png"
         path = os.path.join(screenshots_dir, filename)
-        pixmap.save(path)
+        cv2.imwrite(path, shot)
         self._session_log_event("INFO", f"Screenshot saved: {filename}")
 
     @pyqtSlot()
@@ -1069,8 +1096,8 @@ class MainWindow(QMainWindow):
 
     # -- Frame & Result Handling -----------------------------------------------
 
-    @pyqtSlot(object, object, object)
-    def _on_frame_ready(self, frame: np.ndarray, results: list, pending_bboxes: list):
+    @pyqtSlot(object, object, object, object)
+    def _on_frame_ready(self, frame: np.ndarray, results: list, pending_bboxes: list, rechecking_bboxes: list):
         """Handle incoming frame and detection results."""
         self._frame_count += 1
         self._frames_value.setText(f"{self._frame_count:,}")
@@ -1215,7 +1242,7 @@ QMainWindow, QWidget#central {
     background-color: #0B0E14;
     color: #E5E7EB;
     font-family: 'Segoe UI', sans-serif;
-    font-size: 13px;
+    font-size: 12px;
 }
 
 QSplitter::handle {
@@ -1253,9 +1280,9 @@ QPushButton#btn_start {
     background-color: #22C55E;
     border: 1px solid #22C55E;
     color: #05170C;
-    border-radius: 16px;
-    padding: 6px 16px;
-    font-size: 12px;
+    border-radius: 14px;
+    padding: 5px 14px;
+    font-size: 11px;
     font-weight: bold;
 }
 
@@ -1277,9 +1304,9 @@ QPushButton#btn_stop {
     background-color: #EF4444;
     border: 1px solid #EF4444;
     color: #200606;
-    border-radius: 16px;
-    padding: 6px 16px;
-    font-size: 12px;
+    border-radius: 14px;
+    padding: 5px 14px;
+    font-size: 11px;
     font-weight: bold;
 }
 
@@ -1301,9 +1328,9 @@ QPushButton#btn_screenshot, QPushButton#btn_clear_zone {
     background-color: #12151C;
     border: 1px solid #262B36;
     color: #C4C9D4;
-    border-radius: 16px;
-    padding: 6px 16px;
-    font-size: 12px;
+    border-radius: 14px;
+    padding: 5px 14px;
+    font-size: 11px;
 }
 
 QPushButton#btn_screenshot:hover, QPushButton#btn_clear_zone:hover {
@@ -1325,9 +1352,9 @@ QPushButton#btn_acknowledge {
     background-color: #F59E0B;
     border: 1px solid #F59E0B;
     color: #241A02;
-    border-radius: 14px;
-    padding: 6px 14px;
-    font-size: 12px;
+    border-radius: 13px;
+    padding: 5px 12px;
+    font-size: 11px;
     font-weight: bold;
 }
 
@@ -1396,7 +1423,7 @@ QTableWidget#history_table {
 }
 
 QTableWidget#history_table::item {
-    padding: 6px 8px;
+    padding: 4px 6px;
     border-bottom: 1px solid #1F2430;
 }
 
@@ -1407,10 +1434,10 @@ QTableWidget#history_table::item:selected {
 QHeaderView::section {
     background-color: transparent;
     color: #6B7280;
-    font-size: 11px;
+    font-size: 10px;
     border: none;
     border-bottom: 1px solid #1F2430;
-    padding: 4px 8px;
+    padding: 3px 6px;
 }
 
 /* Status Bar */
@@ -1433,7 +1460,7 @@ QTextEdit#session_log {
     color: #C4C9D4;
     border: none;
     font-family: 'Consolas', monospace;
-    font-size: 11px;
+    font-size: 10px;
     padding: 2px;
 }
 """
@@ -1450,6 +1477,12 @@ QTextEdit#session_log {
     def _on_clear_zone(self):
         self._video_widget.clear_selection()
 
+    @pyqtSlot(str)
+    def _on_recheck_requested(self, face_id: str):
+        """User clicked a face's "Re-check" button — run one more classification cycle for it."""
+        if self._detection_worker is not None:
+            self._detection_worker.request_recheck(face_id)
+
     @pyqtSlot()
     def _on_clear_log(self):
         self._session_log.clear()
@@ -1457,7 +1490,7 @@ QTextEdit#session_log {
     # -- Mini Mode ---------------------------------------------------------------
 
     _MINI_MODE_SIZE = (300, 220)
-    _FULL_MODE_MIN_SIZE = (900, 680)
+    _FULL_MODE_MIN_SIZE = (820, 600)
 
     @pyqtSlot()
     def _toggle_mini_mode(self):
@@ -1580,7 +1613,8 @@ QTextEdit#session_log {
         # window is actually shown; guarded to apply only once per process.
         if not self._capture_exclusion_applied:
             self._capture_exclusion_applied = True
-            mechanism = apply_capture_exclusion(int(self.winId()))
+            mechanism, affinity = apply_capture_exclusion(int(self.winId()))
+            self._capture_affinity_value = affinity
             self._session_log_event("INFO", f"Capture exclusion: {mechanism}")
 
     # -- Cleanup ---------------------------------------------------------------

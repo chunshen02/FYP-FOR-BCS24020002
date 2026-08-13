@@ -27,19 +27,35 @@ _RISK_COLOURS = {
 _PENDING_COLOUR = QColor("#6B7280")
 _PENDING_BADGE_BG = QColor("#12151C")
 _PENDING_BADGE_FG = QColor("#9CA3AF")
+_RECHECK_COLOUR = QColor("#F59E0B")
+_RECHECK_BUTTON_BG = QColor("#12151C")
+_RECHECK_BUTTON_FG = QColor("#9CA3AF")
 
-# Badge: bold percentage on top, smaller risk label + timestamp beneath
-_BADGE_PCT_FONT = QFont("Segoe UI", 15)
-_BADGE_PCT_FONT.setBold(True)
-_BADGE_PCT_METRICS = QFontMetrics(_BADGE_PCT_FONT)
+# Badge: bold percentage on top, smaller risk label + timestamp beneath.
+# Badges are drawn at one of these size tiers -- full size unless it would
+# overlap a neighboring face's badge, in which case progressively smaller
+# tiers are tried so crowded faces still each get a legible badge instead
+# of overlapping ones (see VideoWidget._place_badge).
+_BADGE_SCALE_TIERS = (1.0, 0.8, 0.65, 0.5)
 
-_BADGE_SUB_FONT = QFont("Segoe UI", 8)
-_BADGE_SUB_FONT.setBold(True)
-_BADGE_SUB_METRICS = QFontMetrics(_BADGE_SUB_FONT)
 
-_BADGE_FONT = QFont("Segoe UI", 10)
-_BADGE_FONT.setBold(True)
-_BADGE_METRICS = QFontMetrics(_BADGE_FONT)
+def _tiered_fonts(base_pt: int) -> dict:
+    fonts = {}
+    for scale in _BADGE_SCALE_TIERS:
+        f = QFont("Segoe UI", max(int(round(base_pt * scale)), 6))
+        f.setBold(True)
+        fonts[scale] = f
+    return fonts
+
+
+_BADGE_PCT_FONTS = _tiered_fonts(15)
+_BADGE_PCT_METRICS = {s: QFontMetrics(f) for s, f in _BADGE_PCT_FONTS.items()}
+
+_BADGE_SUB_FONTS = _tiered_fonts(8)
+_BADGE_SUB_METRICS = {s: QFontMetrics(f) for s, f in _BADGE_SUB_FONTS.items()}
+
+_BADGE_FONTS = _tiered_fonts(10)
+_BADGE_METRICS = {s: QFontMetrics(f) for s, f in _BADGE_FONTS.items()}
 
 _LIVE_FONT = QFont("Segoe UI", 11)
 _LIVE_FONT.setBold(True)
@@ -59,6 +75,7 @@ class VideoWidget(QWidget):
     """
 
     region_selected = pyqtSignal(object)  # emits (x, y, w, h) in frame pixels, or None
+    recheck_requested = pyqtSignal(str)   # emits the face_id whose "Re-check" button was clicked
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -69,6 +86,8 @@ class VideoWidget(QWidget):
         self._current_pixmap = None
         self._current_results = []
         self._current_pending_bboxes = []
+        self._current_rechecking_bboxes = []
+        self._recheck_hitboxes = []  # list[(QRect, face_id)] in widget coords, rebuilt every paint
         self._frame_size = (0, 0)
         self._display_size = (0, 0)
         self._offset = (0, 0)
@@ -85,9 +104,10 @@ class VideoWidget(QWidget):
         self._sel_rect: tuple | None = None
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-    @pyqtSlot(object, object, object)
-    def update_frame(self, frame: np.ndarray, results: list, pending_bboxes: list = None):
-        """Update the displayed frame, analyzed results, and pending placeholders."""
+    @pyqtSlot(object, object, object, object)
+    def update_frame(self, frame: np.ndarray, results: list, pending_bboxes: list = None,
+                      rechecking_bboxes: list = None):
+        """Update the displayed frame, analyzed results, and pending/rechecking placeholders."""
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_frame.shape
         self._frame_size = (w, h)
@@ -100,6 +120,7 @@ class VideoWidget(QWidget):
         self._cached_scaled_pixmap = None  # invalidate on new frame
         self._current_results = results
         self._current_pending_bboxes = pending_bboxes or []
+        self._current_rechecking_bboxes = rechecking_bboxes or []
         self.update()
 
     def clear(self):
@@ -108,6 +129,8 @@ class VideoWidget(QWidget):
         self._cached_scaled_pixmap = None
         self._current_results = []
         self._current_pending_bboxes = []
+        self._current_rechecking_bboxes = []
+        self._recheck_hitboxes = []
         self.update()
 
     def grab_screenshot(self) -> QPixmap | None:
@@ -116,8 +139,13 @@ class VideoWidget(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self._current_pixmap is not None:
-            self._sel_start = event.position().toPoint()
-            self._sel_end = event.position().toPoint()
+            pos = event.position().toPoint()
+            for rect, face_id in self._recheck_hitboxes:
+                if rect.contains(pos):
+                    self.recheck_requested.emit(face_id)
+                    return
+            self._sel_start = pos
+            self._sel_end = pos
         elif event.button() == Qt.MouseButton.RightButton:
             self.clear_selection()
 
@@ -234,102 +262,196 @@ class VideoWidget(QWidget):
         painter.end()
 
     def _draw_overlays(self, painter: QPainter):
-        """Draw colour-coded bounding boxes, confidence badges, and pending placeholders."""
+        """Draw bounding boxes, then collision-aware badges (results, then pending/rechecking)."""
+        self._recheck_hitboxes = []
         if self._frame_size[0] == 0:
             return
-        if not self._current_results and not self._current_pending_bboxes:
+        if (not self._current_results and not self._current_pending_bboxes
+                and not self._current_rechecking_bboxes):
             return
 
         scale_x = self._display_size[0] / self._frame_size[0]
         scale_y = self._display_size[1] / self._frame_size[1]
         now = time.perf_counter()
 
+        # Bounding boxes reflect actual detected face position, so they are
+        # never moved or resized -- only badge placement is collision-aware.
         for result in self._current_results:
             if not result.bbox:
                 continue
-
-            box_colour, badge_bg, badge_fg = _RISK_COLOURS.get(
-                result.risk_level, _RISK_COLOURS["REAL"]
-            )
-
-            x = result.bbox["x"]
-            y = result.bbox["y"]
-            w = result.bbox["w"]
-            h = result.bbox["h"]
-
-            scaled_x = int(x * scale_x) + self._offset[0]
-            scaled_y = int(y * scale_y) + self._offset[1]
-            scaled_w = int(w * scale_x)
-            scaled_h = int(h * scale_y)
-
+            box_colour, _, _ = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
             painter.setPen(QPen(box_colour, 2))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(scaled_x, scaled_y, scaled_w, scaled_h, 6, 6)
-
-            p_fake_pct = result.p_fake_raw * 100
-            elapsed = now - result.last_updated
-            age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
-            pct_text = f"{p_fake_pct:.1f}%"
-            sub_text = f"{result.risk_level.upper()}  ·  {age_str}"
-
-            badge_w = max(
-                _BADGE_PCT_METRICS.horizontalAdvance(pct_text),
-                _BADGE_SUB_METRICS.horizontalAdvance(sub_text),
-            ) + 20
-            badge_h = 46
-            badge_y = scaled_y + scaled_h + 6
-
-            painter.setBrush(QBrush(badge_bg))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 10, 10)
-
-            painter.setFont(_BADGE_PCT_FONT)
-            painter.setPen(badge_fg)
-            painter.drawText(
-                scaled_x, badge_y + 3, badge_w, 24,
-                Qt.AlignmentFlag.AlignCenter,
-                pct_text
-            )
-
-            painter.setFont(_BADGE_SUB_FONT)
-            fg = QColor(badge_fg)
-            fg.setAlpha(200)
-            painter.setPen(fg)
-            painter.drawText(
-                scaled_x, badge_y + 27, badge_w, 16,
-                Qt.AlignmentFlag.AlignCenter,
-                sub_text
-            )
+            painter.drawRoundedRect(self._scaled_rect(result.bbox, scale_x, scale_y), 6, 6)
 
         for bbox in self._current_pending_bboxes:
-            if not bbox:
+            self._draw_bbox_outline(painter, bbox, scale_x, scale_y, _PENDING_COLOUR)
+        for bbox in self._current_rechecking_bboxes:
+            self._draw_bbox_outline(painter, bbox, scale_x, scale_y, _RECHECK_COLOUR)
+
+        # Badges: results first (highest priority — an actual verdict),
+        # then pending, then rechecking, each avoiding every badge already
+        # placed this frame.
+        placed_badges: list = []
+        for result in self._current_results:
+            if not result.bbox:
                 continue
-            scaled_x = int(bbox["x"] * scale_x) + self._offset[0]
-            scaled_y = int(bbox["y"] * scale_y) + self._offset[1]
-            scaled_w = int(bbox["w"] * scale_x)
-            scaled_h = int(bbox["h"] * scale_y)
+            self._draw_result_badge(painter, result, scale_x, scale_y, now, placed_badges)
+        for bbox in self._current_pending_bboxes:
+            if bbox:
+                self._draw_placeholder_badge(painter, bbox, scale_x, scale_y, "Analyzing...",
+                                              _PENDING_COLOUR, _PENDING_BADGE_FG, placed_badges)
+        for bbox in self._current_rechecking_bboxes:
+            if bbox:
+                self._draw_placeholder_badge(painter, bbox, scale_x, scale_y, "Re-checking...",
+                                              _RECHECK_COLOUR, _RECHECK_COLOUR, placed_badges)
 
-            pen = QPen(_PENDING_COLOUR, 2, Qt.PenStyle.DashLine)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(scaled_x, scaled_y, scaled_w, scaled_h)
+    def _scaled_rect(self, bbox: dict, scale_x: float, scale_y: float) -> QRect:
+        """Map a frame-pixel bbox dict to a widget-coordinate QRect."""
+        return QRect(
+            int(bbox["x"] * scale_x) + self._offset[0],
+            int(bbox["y"] * scale_y) + self._offset[1],
+            int(bbox["w"] * scale_x),
+            int(bbox["h"] * scale_y),
+        )
 
-            badge_text = "Analyzing..."
-            badge_y = scaled_y + scaled_h + 4
-            badge_h = 20
-            badge_w = _BADGE_METRICS.horizontalAdvance(badge_text) + 10
+    def _draw_bbox_outline(self, painter: QPainter, bbox: dict, scale_x: float, scale_y: float,
+                            colour: QColor):
+        """Dashed outline only, for a face with no current result (pending or rechecking)."""
+        if not bbox:
+            return
+        painter.setPen(QPen(colour, 2, Qt.PenStyle.DashLine))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(self._scaled_rect(bbox, scale_x, scale_y))
 
-            painter.setBrush(QBrush(_PENDING_BADGE_BG))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(scaled_x, badge_y, badge_w, badge_h, 3, 3)
+    def _place_badge(self, box_rect: QRect, measure_fn, placed: list) -> tuple:
+        """
+        Find a non-overlapping placement for a badge anchored to box_rect.
 
-            painter.setFont(_BADGE_FONT)
-            painter.setPen(_PENDING_BADGE_FG)
-            painter.drawText(
-                scaled_x + 4, badge_y, badge_w - 8, badge_h,
-                Qt.AlignmentFlag.AlignCenter,
-                badge_text
+        measure_fn(scale) -> (width, height) returns the badge's footprint
+        at a given size tier (using that tier's own font metrics, so
+        shrinking actually shrinks the rendered text, not just an empty
+        box). Tries every combination of {below, above} x {left-anchored,
+        right-anchored, centered} at each tier from full size down to the
+        smallest -- horizontal offsets matter as much as vertical ones when
+        neighboring faces are side by side, not just stacked. If nothing
+        avoids overlap, forces the smallest/first placement so a badge is
+        never simply dropped.
+
+        Returns (rect, scale).
+        """
+        widget_w = self.width()
+        fallback = None
+        for scale in _BADGE_SCALE_TIERS:
+            w, h = measure_fn(scale)
+            x_candidates = (box_rect.left(), box_rect.right() - w, box_rect.center().x() - w // 2)
+            for y in (box_rect.bottom() + 6, box_rect.top() - h - 6):
+                for x in x_candidates:
+                    x = max(0, min(x, widget_w - w)) if widget_w > w else max(0, x)
+                    rect = QRect(x, max(0, y), w, h)
+                    if fallback is None:
+                        fallback = (rect, scale)
+                    if not any(rect.intersects(p) for p in placed):
+                        return rect, scale
+        return fallback
+
+    def _draw_result_badge(self, painter: QPainter, result, scale_x: float, scale_y: float,
+                            now: float, placed: list):
+        _, badge_bg, badge_fg = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
+        box_rect = self._scaled_rect(result.bbox, scale_x, scale_y)
+
+        p_fake_pct = result.p_fake_raw * 100
+        elapsed = now - result.last_updated
+        age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
+        pct_text = f"{p_fake_pct:.1f}%"
+        sub_text = f"{result.risk_level.upper()}  ·  {age_str}"
+        recheck_label = "↻ Re-check"
+
+        # The Re-check button rides along beside the badge, so its footprint
+        # must be part of the same collision search -- otherwise the badge
+        # itself never overlaps a neighbor, but the button tacked on next to
+        # it can still poke into one.
+        def measure(scale):
+            badge_w = max(
+                _BADGE_PCT_METRICS[scale].horizontalAdvance(pct_text),
+                _BADGE_SUB_METRICS[scale].horizontalAdvance(sub_text),
+            ) + int(20 * scale)
+            h = int(46 * scale)
+            if not result.face_id:
+                return badge_w, h
+            button_w = _BADGE_METRICS[scale].horizontalAdvance(recheck_label) + int(16 * scale)
+            return badge_w + int(6 * scale) + button_w, h
+
+        combined_rect, scale = self._place_badge(box_rect, measure, placed)
+        placed.append(combined_rect)
+
+        badge_w = max(
+            _BADGE_PCT_METRICS[scale].horizontalAdvance(pct_text),
+            _BADGE_SUB_METRICS[scale].horizontalAdvance(sub_text),
+        ) + int(20 * scale)
+        rect = QRect(combined_rect.x(), combined_rect.y(), badge_w, combined_rect.height())
+
+        painter.setBrush(QBrush(badge_bg))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect, int(10 * scale), int(10 * scale))
+
+        painter.setFont(_BADGE_PCT_FONTS[scale])
+        painter.setPen(badge_fg)
+        painter.drawText(
+            rect.x(), rect.y() + int(3 * scale), rect.width(), int(24 * scale),
+            Qt.AlignmentFlag.AlignCenter,
+            pct_text
+        )
+
+        painter.setFont(_BADGE_SUB_FONTS[scale])
+        fg = QColor(badge_fg)
+        fg.setAlpha(200)
+        painter.setPen(fg)
+        painter.drawText(
+            rect.x(), rect.y() + int(27 * scale), rect.width(), int(16 * scale),
+            Qt.AlignmentFlag.AlignCenter,
+            sub_text
+        )
+
+        if result.face_id:
+            button_rect = QRect(
+                rect.right() + int(6 * scale), rect.y(),
+                combined_rect.right() - rect.right() - int(6 * scale), rect.height(),
             )
+            self._draw_recheck_button(painter, button_rect, scale, recheck_label, result.face_id)
+
+    def _draw_placeholder_badge(self, painter: QPainter, bbox: dict, scale_x: float, scale_y: float,
+                                 label: str, box_colour: QColor, text_colour: QColor, placed: list):
+        box_rect = self._scaled_rect(bbox, scale_x, scale_y)
+
+        def measure(scale):
+            w = _BADGE_METRICS[scale].horizontalAdvance(label) + int(10 * scale)
+            h = int(20 * scale)
+            return w, h
+
+        rect, scale = self._place_badge(box_rect, measure, placed)
+        placed.append(rect)
+
+        painter.setBrush(QBrush(_PENDING_BADGE_BG))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(rect, 3, 3)
+
+        painter.setFont(_BADGE_FONTS[scale])
+        painter.setPen(text_colour)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
+    def _draw_recheck_button(self, painter: QPainter, rect: QRect, scale: float,
+                              label: str, face_id: str):
+        """Draw the 'Re-check' pill at an already-resolved rect; records its hitbox for mousePressEvent."""
+        painter.setBrush(QBrush(_RECHECK_BUTTON_BG))
+        painter.setPen(QPen(_PENDING_COLOUR, 1))
+        painter.drawRoundedRect(rect, int(10 * scale), int(10 * scale))
+
+        painter.setFont(_BADGE_FONTS[scale])
+        painter.setPen(_RECHECK_BUTTON_FG)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
+        self._recheck_hitboxes.append((rect, face_id))
 
     def _toggle_blink(self):
         self._blink_on = not self._blink_on

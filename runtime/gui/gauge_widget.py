@@ -39,7 +39,7 @@ class GaugeWidget(QWidget):
         super().__init__(parent)
         self._value = 0.0
         self._label = "—"  # em dash placeholder before first result
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(125)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def set_value(self, value: float, label: str):

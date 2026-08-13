@@ -25,6 +25,7 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from runtime.capture.screen_capture import ScreenCapture
+from runtime.capture import window_affinity
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
 from runtime.detection.inference import DeepfakeInferenceEngine, BitmindAPIError, BitmindAuthError
@@ -252,7 +253,12 @@ class DetectionWorker(QThread):
             while self._running:
                 t_frame_start = time.perf_counter()
 
-                frame = capture.read()
+                # Shared with the manual-screenshot path (main_window._on_screenshot),
+                # which briefly lifts this app's own capture exclusion — this lock
+                # guarantees that window is never overlapped by a live capture tick,
+                # so a live frame can never pick up the app's own un-excluded window.
+                with window_affinity.capture_affinity_lock:
+                    frame = capture.read()
                 display_frame = self._mask_exclusion(frame)  # mask only for display (prevents mirror effect)
                 detection_frame = frame  # detect on the unmasked frame so faces overlapping the app window aren't lost
 
