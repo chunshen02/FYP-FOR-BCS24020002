@@ -18,6 +18,15 @@ BBOX_EXPAND_RATIO = 0.20              # Expand bounding box by 20% on all sides
 ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if exceeded
 DETECTION_UPSCALE = 2.0               # Upscale factor applied to frame before BlazeFace (helps small faces)
 MAX_FACES = 3                         # Analyze at most this many faces per frame (largest first)
+                                       # Faces beyond this limit (smallest-area first) are silently
+                                       # dropped every tick, before ever reaching the classification
+                                       # queue -- not delayed, not queued, not logged. A meeting with
+                                       # more than MAX_FACES participants on screen will never have
+                                       # the overflow faces analyzed at all for as long as they stay
+                                       # smaller than the top MAX_FACES. Known limitation, not yet
+                                       # addressed; raising this value or handling overflow more
+                                       # gracefully (e.g. rotating which faces are prioritized) is a
+                                       # separate future change.
 
 # ── Multi-Face Tracking ────────────────────────────────────────────────────────
 FACE_TRACK_MAX_DIST_PX = 50           # Centroid-distance fallback threshold (pixels) for matching
