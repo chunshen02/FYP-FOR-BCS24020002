@@ -109,7 +109,6 @@ def run_benchmark_pass(pass_number: int) -> dict:
         "mean_fps":        np.mean(fps_samples) if fps_samples else 0.0,
         "min_fps":         np.min(fps_samples) if fps_samples else 0.0,
         "mean_latency_ms": np.mean(latencies) if latencies else 0.0,
-        "p95_latency_ms":  np.percentile(latencies, 95) if latencies else 0.0,
         "mean_cpu_pct":    np.mean(cpu_samples) if cpu_samples else 0.0,
         "peak_ram_mb":     np.max(ram_samples) if ram_samples else 0.0,
         "mean_api_ms":     np.mean(api_ms_samples) if api_ms_samples else None,
@@ -126,12 +125,12 @@ def run_benchmark_pass(pass_number: int) -> dict:
 
 def print_summary(all_passes: list):
     mean_fps      = np.mean([p["mean_fps"] for p in all_passes])
+    lowest_fps    = np.min([p["min_fps"] for p in all_passes])
     mean_latency  = np.mean([p["mean_latency_ms"] for p in all_passes])
     mean_cpu      = np.mean([p["mean_cpu_pct"] for p in all_passes])
     peak_ram      = np.max([p["peak_ram_mb"] for p in all_passes])
     api_values    = [p["mean_api_ms"] for p in all_passes if p["mean_api_ms"] is not None]
     mean_api_ms   = np.mean(api_values) if api_values else None
-    fps_variance  = np.std([p["mean_fps"] for p in all_passes]) / mean_fps if mean_fps > 0 else 0
 
     print("\n" + "=" * 70)
     print("  BENCHMARK SUMMARY")
@@ -143,17 +142,15 @@ def print_summary(all_passes: list):
         status = "PASS" if passed else "FAIL"
         print(f"  {label:<30} {f'{measured:.1f}{unit}':>10} {target_str:>12} {status:>8}")
 
-    row("Mean FPS",         mean_fps,    f">={config.TARGET_FPS}",         mean_fps >= config.TARGET_FPS,         " fps")
-    row("Mean Latency",     mean_latency, f"<={config.TARGET_LATENCY_MS}",  mean_latency <= config.TARGET_LATENCY_MS, " ms")
-    row("Mean CPU",         mean_cpu,    f"<={config.TARGET_CPU_PERCENT}",  mean_cpu <= config.TARGET_CPU_PERCENT,  "%")
-    row("Peak RAM",         peak_ram,    f"<={config.TARGET_RAM_MB}",       peak_ram <= config.TARGET_RAM_MB,       " MB")
+    row("Mean FPS",            mean_fps,     f">={config.TARGET_FPS}",         mean_fps >= config.TARGET_FPS,         " fps")
+    row("Lowest FPS Observed", lowest_fps,   f">={config.TARGET_FPS}",         lowest_fps >= config.TARGET_FPS,       " fps")
+    row("Mean Latency",        mean_latency, f"<={config.TARGET_LATENCY_MS}",  mean_latency <= config.TARGET_LATENCY_MS, " ms")
+    row("Mean CPU",            mean_cpu,     f"<={config.TARGET_CPU_PERCENT}", mean_cpu <= config.TARGET_CPU_PERCENT, "%")
+    row("Peak RAM",            peak_ram,     f"<={config.TARGET_RAM_MB}",      peak_ram <= config.TARGET_RAM_MB,      " MB")
 
     if mean_api_ms is not None:
         print(f"  {'API Response Time':<30} {f'{mean_api_ms:.0f} ms':>10} {'(logged)':>12} {'INFO':>8}")
 
-    print("-" * 70)
-    variance_status = "PASS" if fps_variance <= 0.10 else "INVESTIGATE"
-    print(f"  {'FPS Variance (<10%)':<30} {f'{fps_variance*100:.1f}%':>10} {'<10%':>12} {variance_status:>8}")
     print("=" * 70)
 
 

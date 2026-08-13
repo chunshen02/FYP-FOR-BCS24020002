@@ -157,31 +157,23 @@ def main():
     detector.close()
     engine.close()
 
-    # ── Metrics ──────────────────────────────────────────────────────────
+    # ── Results ──────────────────────────────────────────────────────────
     valid = [r for r in results if "error" not in r]
     errors = len(results) - len(valid)
+    n = len(valid)
 
-    tp = sum(1 for r in valid if r["label"] == "DEEPFAKE" and r["decision"] == "DEEPFAKE")
-    tn = sum(1 for r in valid if r["label"] == "REAL"     and r["decision"] == "REAL")
-    fp = sum(1 for r in valid if r["label"] == "REAL"     and r["decision"] == "DEEPFAKE")
-    fn = sum(1 for r in valid if r["label"] == "DEEPFAKE" and r["decision"] == "REAL")
-    n  = len(valid)
+    real_valid = [r for r in valid if r["label"] == "REAL"]
+    fake_valid = [r for r in valid if r["label"] == "DEEPFAKE"]
+    real_correct = sum(1 for r in real_valid if r["correct"])
+    fake_correct = sum(1 for r in fake_valid if r["correct"])
+    total_correct = real_correct + fake_correct
 
-    accuracy  = (tp + tn) / n              if n > 0               else 0.0
-    precision = tp / (tp + fp)             if (tp + fp) > 0       else 0.0
-    recall    = tp / (tp + fn)             if (tp + fn) > 0       else 0.0
-    f1        = (2 * precision * recall /
-                 (precision + recall))     if (precision + recall) > 0 else 0.0
+    accuracy = total_correct / n if n > 0 else 0.0
+    real_acc = real_correct / len(real_valid) if real_valid else 0.0
+    fake_acc = fake_correct / len(fake_valid) if fake_valid else 0.0
 
-    real_acc  = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    fake_acc  = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-
-    avg_p_fake_real = (sum(r["p_fake"] for r in valid if r["label"] == "REAL") /
-                       sum(1 for r in valid if r["label"] == "REAL")
-                       if any(r["label"] == "REAL" for r in valid) else 0.0)
-    avg_p_fake_fake = (sum(r["p_fake"] for r in valid if r["label"] == "DEEPFAKE") /
-                       sum(1 for r in valid if r["label"] == "DEEPFAKE")
-                       if any(r["label"] == "DEEPFAKE" for r in valid) else 0.0)
+    avg_p_fake_real = sum(r["p_fake"] for r in real_valid) / len(real_valid) if real_valid else 0.0
+    avg_p_fake_fake = sum(r["p_fake"] for r in fake_valid) / len(fake_valid) if fake_valid else 0.0
     avg_api_ms = sum(r["api_ms"] for r in valid) / n if n > 0 else 0.0
 
     print()
@@ -190,22 +182,16 @@ def main():
     print("=" * 62)
     print(f"  Samples tested : {n}  ({errors} skipped due to load errors)")
     print()
-    print(f"  Confusion Matrix")
+    print(f"  Correctly identified")
     print(f"  {'─'*44}")
-    print(f"  True  Positives (TP) : {tp:>3}   deepfake correctly flagged")
-    print(f"  True  Negatives (TN) : {tn:>3}   real correctly cleared")
-    print(f"  False Positives (FP) : {fp:>3}   real wrongly flagged as deepfake")
-    print(f"  False Negatives (FN) : {fn:>3}   deepfake missed")
-    print()
+    print(f"  Real faces      : {real_correct}/{len(real_valid)}   ({real_acc*100:.1f}%)")
+    print(f"  Deepfake faces  : {fake_correct}/{len(fake_valid)}   ({fake_acc*100:.1f}%)")
     print(f"  {'─'*44}")
-    print(f"  Accuracy           : {accuracy  *100:>6.1f}%  ({tp+tn}/{n} correct)")
-    print(f"  Precision          : {precision *100:>6.1f}%  (of flagged, % truly fake)")
-    print(f"  Recall             : {recall    *100:>6.1f}%  (of fakes, % caught)")
-    print(f"  F1 Score           : {f1        *100:>6.1f}%")
+    print(f"  Overall Accuracy : {total_correct}/{n}   ({accuracy*100:.1f}%)")
     print()
-    print(f"  Per-class accuracy")
-    print(f"    Real  faces : {real_acc*100:>6.1f}%  (avg P_fake = {avg_p_fake_real*100:.1f}%)")
-    print(f"    Deepfake    : {fake_acc*100:>6.1f}%  (avg P_fake = {avg_p_fake_fake*100:.1f}%)")
+    print(f"  Average confidence score (P_fake)")
+    print(f"    Real  faces : {avg_p_fake_real*100:>6.1f}%")
+    print(f"    Deepfake    : {avg_p_fake_fake*100:>6.1f}%")
     print()
     print(f"  Mean API response  : {avg_api_ms:>6.0f} ms")
     print("=" * 62)
