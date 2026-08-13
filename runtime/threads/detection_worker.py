@@ -16,6 +16,7 @@ Architecture:
 
 import threading
 import time
+from dataclasses import replace
 import numpy as np
 import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -52,7 +53,8 @@ def _iou(a: dict, b: dict) -> float:
 
 
 def match_tracks(tracks: dict, bboxes: list, max_dist: float,
-                  iou_threshold: float, grace_frames: int) -> tuple:
+                  iou_threshold: float, grace_frames: int,
+                  protected_ids: frozenset = frozenset()) -> tuple:
     """
     Match bboxes to existing tracks: highest-IoU-above-threshold first
     (robust to fast movement, since box overlap survives large centroid
@@ -63,6 +65,10 @@ def match_tracks(tracks: dict, bboxes: list, max_dist: float,
     Args:
         tracks: face_id -> {"bbox": {"x","y","w","h"}, "missed": int}
         bboxes: list of {"x","y","w","h"} dicts for faces in the current frame
+        protected_ids: track ids that must survive this update regardless of
+            missed count — used to keep a track alive while its BitMind
+            request is still in flight, so a late response has a face to
+            attach to instead of being orphaned.
 
     Returns:
         (matched_ids, survivors)
@@ -119,7 +125,7 @@ def match_tracks(tracks: dict, bboxes: list, max_dist: float,
         if tid in survivors:
             continue
         missed = track["missed"] + 1
-        if missed <= grace_frames:
+        if missed <= grace_frames or tid in protected_ids:
             survivors[tid] = {"bbox": track["bbox"], "missed": missed}
 
     return matched_ids, survivors
@@ -132,11 +138,12 @@ class _FaceTracker:
         self._tracks: dict = {}   # face_id -> {"bbox": dict, "missed": int}
         self._counter: int = 0
 
-    def update(self, bboxes: list) -> list:
+    def update(self, bboxes: list, protected_ids: frozenset = frozenset()) -> list:
         """Match bboxes to existing tracks; assign new IDs to unmatched faces."""
         matched_ids, survivors = match_tracks(
             self._tracks, bboxes,
             config.FACE_TRACK_MAX_DIST_PX, config.FACE_TRACK_IOU_THRESHOLD, config.FACE_TRACK_GRACE_FRAMES,
+            protected_ids,
         )
 
         ids = []
@@ -160,14 +167,16 @@ class DetectionWorker(QThread):
     Runs the full deepfake detection pipeline in a background thread.
 
     Signals:
-        frame_ready(np.ndarray, list, list): BGR frame, list of FaceResult,
-            list of pending bboxes (faces detected but not yet analyzed by API).
+        frame_ready(np.ndarray, list, list, list): BGR frame, list of FaceResult
+            (locked — classified once, awaiting manual re-check to run again),
+            list of pending bboxes (never yet classified), list of rechecking
+            bboxes (previously classified, a fresh classification is in flight).
         fps_update(float): Current processing FPS.
         api_response_update(float): Most recent BitMind API response time (ms).
         error_occurred(str): Error message if the pipeline crashes.
     """
 
-    frame_ready = pyqtSignal(object, object, object)
+    frame_ready = pyqtSignal(object, object, object, object)
     fps_update = pyqtSignal(float)
     api_response_update = pyqtSignal(float)
     error_occurred = pyqtSignal(str)
@@ -184,6 +193,14 @@ class DetectionWorker(QThread):
         self._pending_faces: dict = {}   # face_id -> (jpeg_bytes, bbox, resized_bgr)
         self._result_lock = threading.Lock()
         self._cached_results: dict = {}  # face_id -> FaceResult
+        # A face with a result is "locked" — excluded from auto re-submission
+        # until request_recheck() clears it. _recheck_ids tracks faces whose
+        # lock was just cleared, purely so the GUI can show "Re-checking..."
+        # instead of "Analyzing..." for a face that already has a result.
+        self._locked_ids: set = set()
+        self._recheck_ids: set = set()
+        self._inflight_lock = threading.Lock()
+        self._inflight_id: str | None = None   # face currently mid-HTTP-call, protected from track eviction
         self._excl_lock = threading.Lock()
         self._excl_rect: tuple | None = None  # (x, y, w, h) physical pixels
         self._focus_lock = threading.Lock()
@@ -196,6 +213,9 @@ class DetectionWorker(QThread):
         self._running = True
         self._pending_faces.clear()
         self._cached_results.clear()
+        self._locked_ids.clear()
+        self._recheck_ids.clear()
+        self._inflight_id = None
 
         capture = ScreenCapture(region=self._region)
         preprocessor = Preprocessor()
@@ -304,32 +324,50 @@ class DetectionWorker(QThread):
                 self.face_count_update.emit(len(face_crops), total_detected)
 
                 bboxes = [b for _, b in face_crops]
-                face_ids = tracker.update(bboxes)
+                with self._inflight_lock:
+                    inflight_id = self._inflight_id
+                # A face mid-HTTP-call must not be evicted just because it
+                # left the frame — its response needs a live track to land on.
+                protected_ids = frozenset({inflight_id}) if inflight_id else frozenset()
+                face_ids = tracker.update(bboxes, protected_ids=protected_ids)
                 alive_ids = tracker.alive_ids()  # includes ghosts within their grace window
+                keep_ids = alive_ids | protected_ids
 
                 with self._pending_lock:
                     if face_crops:
                         for (crop, bbox), fid in zip(face_crops, face_ids):
+                            # Locked faces already have a result — only a
+                            # manual re-check (which clears the lock) makes
+                            # them eligible for another classification cycle.
+                            if fid in self._locked_ids:
+                                continue
                             jpeg_bytes, resized_bgr = preprocessor.process_with_array(crop)
                             self._pending_faces[fid] = (jpeg_bytes, bbox, resized_bgr)
                     self._pending_faces = {
-                        k: v for k, v in self._pending_faces.items() if k in alive_ids
+                        k: v for k, v in self._pending_faces.items() if k in keep_ids
                     }
+                    self._locked_ids &= alive_ids
+                    self._recheck_ids &= alive_ids
                 with self._result_lock:
                     self._cached_results = {
-                        k: v for k, v in self._cached_results.items() if k in alive_ids
+                        k: v for k, v in self._cached_results.items() if k in keep_ids
                     }
 
-                with self._result_lock:
+                with self._result_lock, self._pending_lock:
                     results = []
                     pending_bboxes = []
+                    rechecking_bboxes = []
                     for fid, bbox in zip(face_ids, bboxes):
-                        if fid in self._cached_results:
-                            results.append(self._cached_results[fid])
+                        if fid in self._recheck_ids:
+                            rechecking_bboxes.append(bbox)
+                        elif fid in self._cached_results:
+                            # Refresh to the current bbox so the box keeps
+                            # following the face even though it's locked.
+                            results.append(replace(self._cached_results[fid], bbox=bbox))
                         else:
                             pending_bboxes.append(bbox)
 
-                self.frame_ready.emit(display_frame, results, pending_bboxes)
+                self.frame_ready.emit(display_frame, results, pending_bboxes, rechecking_bboxes)
 
                 frame_count += 1
                 if frame_count % 30 == 0:
@@ -382,8 +420,17 @@ class DetectionWorker(QThread):
                 time.sleep(0.05)
                 continue
 
+            with self._inflight_lock:
+                self._inflight_id = face_id
             try:
-                result = engine.run_single(jpeg_bytes, bbox, face_id)
+                # Single HTTP attempt, not the multi-attempt retry version —
+                # a face stuck retrying internally would block this whole
+                # single-threaded loop and starve every other pending face.
+                # On failure we just fall through to "continue": the face is
+                # already sitting at the back of _pending_faces (moved there
+                # above, before this attempt), so it naturally gets retried
+                # on its next round-robin turn instead of hogging this one.
+                result = engine.run_single_attempt(jpeg_bytes, bbox, face_id)
             except BitmindAuthError as e:
                 # An invalid/revoked key never self-heals via retry — escalate immediately.
                 consecutive_failures = config.BITMIND_DEGRADED_FAILURE_THRESHOLD
@@ -393,6 +440,9 @@ class DetectionWorker(QThread):
                 consecutive_failures += 1
                 degraded = self._report_api_failure(e, degraded, consecutive_failures)
                 continue
+            finally:
+                with self._inflight_lock:
+                    self._inflight_id = None
 
             if consecutive_failures or degraded:
                 consecutive_failures = 0
@@ -405,11 +455,21 @@ class DetectionWorker(QThread):
 
             with self._result_lock:
                 self._cached_results[face_id] = result
+            with self._pending_lock:
+                was_recheck = face_id in self._recheck_ids
+                self._locked_ids.add(face_id)
+                self._recheck_ids.discard(face_id)
+                # Without this, the entry the pop-and-reinsert above put back
+                # into _pending_faces keeps getting round-robin'd forever,
+                # even though the face is now locked — the lock only stops
+                # NEW insertions, it never removes one already queued.
+                self._pending_faces.pop(face_id, None)
 
             # Logged for every classification, not just alerts, so the raw
             # P_fake distribution can support future FAKE_THRESHOLD recalibration.
             db_log_event(
-                "CLASSIFICATION", detail=f"face={face_id} risk={result.risk_level}",
+                "CLASSIFICATION",
+                detail=f"face={face_id} risk={result.risk_level} trigger={'manual' if was_recheck else 'auto'}",
                 peak_confidence=result.p_fake_raw, api_response_ms=result.api_response_ms,
             )
 
@@ -429,6 +489,12 @@ class DetectionWorker(QThread):
             db_log_event("INFO", "BitMind API connection recovered.")
             self.degraded_mode.emit(False)
         return False
+
+    def request_recheck(self, face_id: str):
+        """Clear a locked face's lock so it runs one more classification cycle."""
+        with self._pending_lock:
+            self._locked_ids.discard(face_id)
+            self._recheck_ids.add(face_id)
 
     def set_exclusion_region(self, rect: tuple | None):
         """Set a screen region (x, y, w, h) in physical pixels to blank before detection."""

@@ -53,6 +53,7 @@ class FaceResult:
     last_updated: float = 0.0  # time.perf_counter() at last API call
     explanation: list = field(default_factory=list)  # local CV evidence strings, populated only for DEEPFAKE
     thumbnail: np.ndarray = None  # the exact preprocessed BGR crop that was analyzed, for Mini mode display
+    face_id: str = ""        # tracker-assigned id — lets the GUI target a manual re-check at the right face
 
 
 def _get_risk_level(p_fake: float) -> str:
@@ -75,14 +76,34 @@ class DeepfakeInferenceEngine:
         self._last_call_time: float = 0.0
 
     def run_single(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
-        """Submit one face crop to the BitMind API and return its result. Raises BitmindAPIError on failure."""
+        """
+        Submit one face crop to the BitMind API, retrying transient failures
+        internally until success or final give-up. Raises BitmindAPIError on
+        failure. Used by offline batch evaluation, which processes samples
+        sequentially with no round-robin queue to block.
+        """
         p_fake_raw, api_ms = self._call_api(jpeg_bytes)
+        return self._to_result(p_fake_raw, api_ms, bbox, face_id)
+
+    def run_single_attempt(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
+        """
+        Submit one face crop with exactly one HTTP attempt — no internal
+        retry loop. Used by the live round-robin pipeline so a failing face
+        yields its turn instead of blocking the queue through a multi-attempt
+        backoff; the caller re-queues on failure. Raises BitmindAPIError on
+        failure.
+        """
+        p_fake_raw, api_ms = self._post_once(jpeg_bytes)
+        return self._to_result(p_fake_raw, api_ms, bbox, face_id)
+
+    def _to_result(self, p_fake_raw: float, api_ms: float, bbox: dict, face_id: str) -> "FaceResult":
         return FaceResult(
             p_fake_raw=p_fake_raw,
             risk_level=_get_risk_level(p_fake_raw),
             api_response_ms=api_ms,
             bbox=bbox,
             last_updated=time.perf_counter(),
+            face_id=face_id,
         )
 
     def _throttle(self):
