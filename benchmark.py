@@ -2,15 +2,21 @@
 benchmark.py
 
 Measures end-to-end real-time detection pipeline performance.
-Includes BitMind API response time measurement and handles the case where the API key is not configured.
+Mirrors DetectionWorker's architecture: the main loop (capture → face detection
+→ tracking → JPEG preprocessing) runs at DISPLAY_FPS while BitMind API calls
+run on a separate thread, so API latency is reported on its own and never
+counted against frame FPS/latency. Handles the case where the API key is not
+configured.
 
 Usage:
     python benchmark.py
 """
 
+import threading
 import time
 import os
 import sys
+import cv2
 import numpy as np
 import psutil
 
@@ -20,6 +26,55 @@ import config
 from runtime.capture.screen_capture import ScreenCapture
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
+from runtime.detection.inference import DeepfakeInferenceEngine, BitmindAPIError
+from runtime.threads.detection_worker import _FaceTracker
+
+_FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
+
+
+def _api_loop(engine, pending: dict, pending_lock: threading.Lock,
+              stop: threading.Event, measuring: threading.Event, stats: dict):
+    """Round-robin pending faces through the API, as DetectionWorker._api_loop does."""
+    while not stop.is_set():
+        with pending_lock:
+            if pending:
+                face_id, (jpeg_bytes, bbox) = next(iter(pending.items()))
+                # Move it to the back so other faces get a turn next
+                del pending[face_id]
+                pending[face_id] = (jpeg_bytes, bbox)
+            else:
+                face_id = None
+
+        if face_id is None:
+            time.sleep(0.05)
+            continue
+
+        # Unlike the live app, faces are never locked after their first result,
+        # so the API thread stays saturated at the rate limit for the whole run —
+        # a worst-case concurrent load on the main loop.
+        try:
+            result = engine.run_single_attempt(jpeg_bytes, bbox, face_id)
+        except BitmindAPIError:
+            if measuring.is_set():
+                stats["failures"] += 1
+            continue
+        if measuring.is_set():
+            stats["api_ms"].append(result.api_response_ms)
+
+
+def _detect_faces(detector: FaceDetector, frame: np.ndarray) -> list:
+    """Upscale, detect, and keep the MAX_FACES largest faces, as DetectionWorker does."""
+    scale = config.DETECTION_UPSCALE
+    if scale != 1.0:
+        h, w = frame.shape[:2]
+        scaled = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+        face_crops = [
+            (crop, {k: int(v / scale) for k, v in b.items()})
+            for crop, b in detector.detect(scaled)
+        ]
+    else:
+        face_crops = detector.detect(frame)
+    return sorted(face_crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True)[:config.MAX_FACES]
 
 
 def run_benchmark_pass(pass_number: int) -> dict:
@@ -28,90 +83,110 @@ def run_benchmark_pass(pass_number: int) -> dict:
     capture = ScreenCapture()
     detector = FaceDetector()
     preprocessor = Preprocessor()
+    tracker = _FaceTracker()
 
-    # Try to load inference engine; skip API calls if key not configured
+    pending: dict = {}   # face_id -> (jpeg_bytes, bbox)
+    pending_lock = threading.Lock()
+    stop = threading.Event()
+    measuring = threading.Event()
+    api_stats = {"api_ms": [], "failures": 0}
+
     try:
-        from runtime.detection.inference import DeepfakeInferenceEngine
         engine = DeepfakeInferenceEngine()
-        api_enabled = True
-        print("  [INFO] BitMind API engine initialised. API calls will be made.")
+        print("  [INFO] BitMind API engine initialised. API calls run on a separate thread.")
     except EnvironmentError:
         engine = None
-        api_enabled = False
         print("  [WARNING] BITMIND_API_KEY not configured. Benchmarking pipeline without API calls.")
 
     capture.start()
     process = psutil.Process(os.getpid())
 
+    api_thread = None
+    if engine is not None:
+        api_thread = threading.Thread(
+            target=_api_loop,
+            args=(engine, pending, pending_lock, stop, measuring, api_stats),
+            daemon=True,
+        )
+        api_thread.start()
+
     latencies = []
     fps_samples = []
     cpu_samples = []
     ram_samples = []
-    api_ms_samples = []
 
     total_duration = config.BENCHMARK_WARMUP_SECONDS + config.BENCHMARK_MEASURE_SECONDS
     start_time = time.perf_counter()
-    frame_count = 0
     interval_start = time.perf_counter()
     interval_frames = 0
 
     print(f"  Warming up for {config.BENCHMARK_WARMUP_SECONDS}s...")
 
-    while True:
-        elapsed = time.perf_counter() - start_time
-        if elapsed >= total_duration:
-            break
+    try:
+        while True:
+            elapsed = time.perf_counter() - start_time
+            if elapsed >= total_duration:
+                break
 
-        in_measurement = elapsed >= config.BENCHMARK_WARMUP_SECONDS
-        frame_start = time.perf_counter()
-
-        frame = capture.read()
-        face_crops = detector.detect(frame)
-
-        if api_enabled:
-            jpeg_list = [preprocessor.process(crop) for crop, _ in face_crops]
-            if not jpeg_list:
-                dummy_crop = np.zeros((224, 224, 3), dtype=np.uint8)
-                jpeg_list = [preprocessor.process(dummy_crop)]
-            results = [
-                engine.run_single(jpeg, bbox={}, face_id=f"bench_{i}")
-                for i, jpeg in enumerate(jpeg_list)
-            ]
-            if results and in_measurement:
-                avg_api_ms = sum(r.api_response_ms for r in results) / len(results)
-                api_ms_samples.append(avg_api_ms)
-
-        frame_latency_ms = (time.perf_counter() - frame_start) * 1000
-
-        if in_measurement:
-            latencies.append(frame_latency_ms)
-            frame_count += 1
-            interval_frames += 1
-
-            interval_elapsed = time.perf_counter() - interval_start
-            if interval_elapsed >= 1.0:
-                fps = interval_frames / interval_elapsed
-                cpu = psutil.cpu_percent(interval=None)
-                ram = process.memory_info().rss / (1024 * 1024)
-                fps_samples.append(fps)
-                cpu_samples.append(cpu)
-                ram_samples.append(ram)
-                interval_frames = 0
-                interval_start = time.perf_counter()
-        else:
-            if elapsed >= config.BENCHMARK_WARMUP_SECONDS - 1:
+            if not measuring.is_set() and elapsed >= config.BENCHMARK_WARMUP_SECONDS:
                 print("  Measurement started...")
+                # The first cpu_percent(None) call always returns 0.0; prime it so
+                # the first real sample covers a full one-second interval.
+                psutil.cpu_percent(interval=None)
+                interval_start = time.perf_counter()
+                interval_frames = 0
+                measuring.set()
 
-    detector.close()
-    capture.stop()
+            frame_start = time.perf_counter()
 
+            frame = capture.read()
+            face_crops = _detect_faces(detector, frame)
+            face_ids = tracker.update([b for _, b in face_crops])
+            jpegs = [preprocessor.process(crop) for crop, _ in face_crops]
+            alive_ids = tracker.alive_ids()
+            with pending_lock:
+                for fid, jpeg_bytes, (_, bbox) in zip(face_ids, jpegs, face_crops):
+                    pending[fid] = (jpeg_bytes, bbox)
+                for fid in [k for k in pending if k not in alive_ids]:
+                    del pending[fid]
+
+            frame_latency_ms = (time.perf_counter() - frame_start) * 1000
+
+            if measuring.is_set():
+                latencies.append(frame_latency_ms)
+                interval_frames += 1
+
+                interval_elapsed = time.perf_counter() - interval_start
+                if interval_elapsed >= 1.0:
+                    fps_samples.append(interval_frames / interval_elapsed)
+                    cpu_samples.append(psutil.cpu_percent(interval=None))
+                    ram_samples.append(process.memory_info().rss / (1024 * 1024))
+                    interval_frames = 0
+                    interval_start = time.perf_counter()
+
+            # Same tick-rate cap as the live app, so CPU reflects real usage rather than a busy loop
+            sleep_time = _FRAME_INTERVAL - (time.perf_counter() - frame_start)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+    finally:
+        stop.set()
+        if api_thread is not None:
+            api_thread.join(timeout=config.BITMIND_API_TIMEOUT_SEC + 1)
+            engine.close()
+        detector.close()
+        capture.stop()
+
+    api_ms = api_stats["api_ms"]
     results_dict = {
         "mean_fps":        np.mean(fps_samples) if fps_samples else 0.0,
         "min_fps":         np.min(fps_samples) if fps_samples else 0.0,
         "mean_latency_ms": np.mean(latencies) if latencies else 0.0,
         "mean_cpu_pct":    np.mean(cpu_samples) if cpu_samples else 0.0,
         "peak_ram_mb":     np.max(ram_samples) if ram_samples else 0.0,
-        "mean_api_ms":     np.mean(api_ms_samples) if api_ms_samples else None,
+        "mean_api_ms":     np.mean(api_ms) if api_ms else None,
+        "api_calls":       len(api_ms),
+        "api_failures":    api_stats["failures"],
+        "api_enabled":     engine is not None,
     }
 
     print(f"  Pass {pass_number} done — "
@@ -119,7 +194,9 @@ def run_benchmark_pass(pass_number: int) -> dict:
           f"Latency={results_dict['mean_latency_ms']:.1f}ms, "
           f"CPU={results_dict['mean_cpu_pct']:.1f}%, "
           f"RAM={results_dict['peak_ram_mb']:.0f}MB"
-          + (f", API={results_dict['mean_api_ms']:.0f}ms" if results_dict['mean_api_ms'] else ""))
+          + (f", API={results_dict['mean_api_ms']:.0f}ms "
+             f"({results_dict['api_calls']} calls, {results_dict['api_failures']} failed)"
+             if results_dict["api_enabled"] and results_dict["mean_api_ms"] is not None else ""))
     return results_dict
 
 
@@ -131,9 +208,12 @@ def print_summary(all_passes: list):
     peak_ram      = np.max([p["peak_ram_mb"] for p in all_passes])
     api_values    = [p["mean_api_ms"] for p in all_passes if p["mean_api_ms"] is not None]
     mean_api_ms   = np.mean(api_values) if api_values else None
+    api_calls     = sum(p["api_calls"] for p in all_passes)
+    api_failures  = sum(p["api_failures"] for p in all_passes)
 
     print("\n" + "=" * 70)
     print("  BENCHMARK SUMMARY")
+    print(f"  Main loop capped at DISPLAY_FPS={config.DISPLAY_FPS}; API on a separate thread.")
     print("=" * 70)
     print(f"  {'Metric':<30} {'Measured':>10} {'Target':>12} {'Status':>8}")
     print("-" * 70)
@@ -150,6 +230,10 @@ def print_summary(all_passes: list):
 
     if mean_api_ms is not None:
         print(f"  {'API Response Time':<30} {f'{mean_api_ms:.0f} ms':>10} {'(logged)':>12} {'INFO':>8}")
+    if all_passes[0]["api_enabled"]:
+        print(f"  {'API Calls (failed)':<30} {f'{api_calls} ({api_failures})':>10} {'(logged)':>12} {'INFO':>8}")
+        if api_calls == 0:
+            print("  [WARNING] No API calls were made — keep a face visible on screen during the benchmark.")
 
     print("=" * 70)
 

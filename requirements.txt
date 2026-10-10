@@ -7,3 +7,4 @@ python-dotenv==1.1.0
 numpy==2.2.5
 psutil
 plyer
+pytest==9.1.1

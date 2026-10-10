@@ -307,41 +307,49 @@ functions:
 19. benchmark.py
 ----------------------------------------------------------------
 Standalone script for measuring end-to-end pipeline performance.
-It runs BENCHMARK_REPEAT passes, each consisting of a warmup
-phase followed by a measurement phase. Per pass it records:
-  - Frame-level end-to-end latency (ms)
+It mirrors DetectionWorker's architecture: the main loop (screen
+capture, upscaled face detection, tracking, JPEG preprocessing)
+runs at DISPLAY_FPS, while BitMind API calls run round-robin on a
+separate thread, so API latency never counts against frame
+FPS/latency. It runs BENCHMARK_REPEAT passes, each consisting of a
+warmup phase followed by a measurement phase. Per pass it records:
+  - Main-loop frame latency (ms)
   - FPS sampled every second
-  - CPU utilisation (psutil)
+  - CPU utilisation (psutil, system-wide)
   - Peak RAM usage (psutil)
-  - BitMind API response time (if API key is configured)
+  - BitMind API response time and call/failure counts (if the API
+    key is configured and a face is visible on screen)
 
 After all passes it prints a summary table comparing measured
 values against the targets defined in config.py (TARGET_FPS,
 TARGET_LATENCY_MS, TARGET_CPU_PERCENT, TARGET_RAM_MB) with
-PASS/FAIL status for each metric, and reports FPS variance
-across passes as a stability indicator.
+PASS/FAIL status for each metric.
 
 ----------------------------------------------------------------
-20. accuracy_test.py
+20. evaluation_runner.py
 ----------------------------------------------------------------
 Standalone script that evaluates deepfake detection accuracy
-against a labelled image dataset (test_samples/real/ and
-test_samples/deepfake/, minimum 10 images total, at least 1 per
-class). Runs each image through the full pipeline — face
-detection, JPEG preprocessing, BitMind API — picking the worst
-(highest P_fake) face when multiple are detected; images with no
-detected face are submitted whole, for pre-cropped datasets. Prints
-a per-image result table, then a confusion matrix (TP/TN/FP/FN),
-accuracy, precision, recall, F1 score, per-class accuracy, and
-mean API response time. Honors the API's 1 request/second rate
-limit automatically.
+against a labelled folder of images and/or video clips
+(<root>/real/ and <root>/deepfake/; defaults to test_samples/,
+minimum 10 files total, at least 1 per class). Runs each image or
+sampled video frame through the full pipeline — face detection,
+JPEG preprocessing, BitMind API — picking the worst (highest
+P_fake) face when multiple are detected; frames with no detected
+face are submitted whole, for pre-cropped datasets. A failed API
+call skips that sample instead of aborting the run. Prints a
+per-sample result table, then overall and per-class accuracy, mean
+P_fake per class, and mean API response time. Results are written
+to a CSV file and, unless --no-db is passed, to the session
+database with ground truth labels for
+compute_classification_metrics(); such a run also appears as a
+session in the app's history table.
 
 ----------------------------------------------------------------
 21. prepare_ff_samples.py
 ----------------------------------------------------------------
 Standalone script that extracts labelled frames from a
 FaceForensics++ dataset and saves them into test_samples/real/ and
-test_samples/deepfake/ for use with accuracy_test.py. Auto-detects
+test_samples/deepfake/ for use with evaluation_runner.py. Auto-detects
 whether the dataset root is the flat Kaggle repack layout
 (<root>/original/, <root>/<Method>/) or the standard nested FF++
 layout (<root>/original_sequences/..., <root>/manipulated_sequences/...).
@@ -349,6 +357,20 @@ Configurable via CLI flags for target frame counts, manipulation
 method (Deepfakes / Face2Face / FaceSwap / NeuralTextures /
 FaceShifter / DeepFakeDetection), and compression quality
 (c0 / c23 / c40).
+
+----------------------------------------------------------------
+22. test_face_tracker.py / test_history.py
+----------------------------------------------------------------
+Offline pytest suite (no network, no API calls); run with
+`pytest` from the project root.
+  - test_face_tracker.py: _FaceTracker / match_tracks() / _iou() —
+    id stability, IoU matching on fast movement, occlusion grace
+    period, and the documented position-swap limitation.
+  - test_history.py: database.py session storage (event logging,
+    session reconstruction with duration and alert count,
+    delete_session, clear_history) and the MainWindow history
+    table, all against a temporary SQLite file so session_log.db
+    is never read or modified.
 
 ================================================================
   END OF FILE DESCRIPTIONS

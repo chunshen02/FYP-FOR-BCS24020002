@@ -2,7 +2,7 @@
 prepare_ff_samples.py
 
 Extracts labelled frames from a FaceForensics++ dataset and saves them to
-test_samples/real/ and test_samples/deepfake/ for use with accuracy_test.py.
+test_samples/real/ and test_samples/deepfake/ for use with evaluation_runner.py.
 
 Supports both the standard FF++ layout and the flat Kaggle repack:
 
@@ -140,9 +140,9 @@ def main():
     print(f"        Total : {r + f} samples")
 
     if r + f < 10:
-        print(f"\n[WARNING] Only {r + f} collected — minimum 10 required for accuracy_test.py.")
+        print(f"\n[WARNING] Only {r + f} collected — minimum 10 required for evaluation_runner.py.")
     else:
-        print("\nRun:  python accuracy_test.py")
+        print("\nRun:  python evaluation_runner.py")
 
 
 if __name__ == "__main__":
