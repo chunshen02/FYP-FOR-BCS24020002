@@ -30,7 +30,9 @@ class Preprocessor:
     def _prepare(self, face_bgr: np.ndarray) -> np.ndarray:
         """Resize and gamma-correct a BGR face crop to FACE_CROP_SIZE."""
         size = config.FACE_CROP_SIZE
-        resized = cv2.resize(face_bgr, (size, size), interpolation=cv2.INTER_CUBIC)
+        # Cubic shrinking aliases fine texture, which could read as a synthesis artifact to the classifier.
+        interpolation = cv2.INTER_AREA if min(face_bgr.shape[:2]) > size else cv2.INTER_CUBIC
+        resized = cv2.resize(face_bgr, (size, size), interpolation=interpolation)
         if cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).mean() < config.LOW_LIGHT_THRESHOLD:
             # Gamma correction brightens dark crops so the API receives a cleaner image.
             resized = cv2.LUT(resized, self._gamma_lut)

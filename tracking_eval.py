@@ -7,7 +7,7 @@ stability is measured by proxy: most clips show one main subject, whose
 face should keep a single ID for the whole clip.
 
 Each video goes through the same detection front end as DetectionWorker
-(DETECTION_UPSCALE, MAX_FACES largest faces) and is sampled at roughly
+(DETECTION_MAX_WIDTH, MAX_FACES largest faces) and is sampled at roughly
 DISPLAY_FPS, so the tracker sees the same per-tick motion as in the live
 app. No BitMind API calls are made.
 
@@ -67,18 +67,6 @@ def _init_worker():
     _detector = FaceDetector()
 
 
-def _detect_bboxes(frame) -> list:
-    """Upscale, detect, and return the MAX_FACES largest bboxes, as DetectionWorker does."""
-    scale = config.DETECTION_UPSCALE
-    if scale != 1.0:
-        h, w = frame.shape[:2]
-        scaled = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
-        bboxes = [{k: int(v / scale) for k, v in b.items()} for _, b in _detector.detect(scaled)]
-    else:
-        bboxes = [b for _, b in _detector.detect(frame)]
-    return sorted(bboxes, key=lambda b: b["w"] * b["h"], reverse=True)[:config.MAX_FACES]
-
-
 def _evaluate_video(task: tuple) -> dict:
     """Track faces through one video and return its per-video stability metrics."""
     subset, path = task
@@ -104,7 +92,7 @@ def _evaluate_video(task: tuple) -> dict:
             ok, frame = cap.retrieve()
             if not ok:
                 break
-            bboxes = _detect_bboxes(frame)
+            bboxes = [b for _, b in _detector.detect(frame)[:config.MAX_FACES]]
             ids = tracker.update(bboxes)
             if ids:
                 face_ticks += 1
@@ -261,7 +249,7 @@ def print_summary(raw_rows: list):
 
     print("\n" + "=" * 70)
     print("  FACE TRACKING STABILITY SUMMARY")
-    print(f"  Sampled at ~DISPLAY_FPS={config.DISPLAY_FPS}, DETECTION_UPSCALE={config.DETECTION_UPSCALE}, "
+    print(f"  Sampled at ~DISPLAY_FPS={config.DISPLAY_FPS}, DETECTION_MAX_WIDTH={config.DETECTION_MAX_WIDTH}, "
           f"MAX_FACES={config.MAX_FACES}, FACE_CONFIDENCE_THRESHOLD={config.FACE_CONFIDENCE_THRESHOLD}")
     print(f"  Tracker: IoU>={config.FACE_TRACK_IOU_THRESHOLD}, max dist {config.FACE_TRACK_MAX_DIST_PX}px, "
           f"grace {config.FACE_TRACK_GRACE_FRAMES} ticks")

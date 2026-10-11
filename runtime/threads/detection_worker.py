@@ -282,34 +282,10 @@ class DetectionWorker(QThread):
                 else:
                     fox, foy = 0, 0
 
-                scale = config.DETECTION_UPSCALE
-                if scale != 1.0:
-                    h, w = detection_frame.shape[:2]
-                    scaled_frame = cv2.resize(
-                        detection_frame,
-                        (int(w * scale), int(h * scale)),
-                        interpolation=cv2.INTER_CUBIC,
-                    )
-                    raw_crops = detector.detect(scaled_frame)
-                    face_crops = [
-                        (crop, {
-                            "x": int(b["x"] / scale) + fox,
-                            "y": int(b["y"] / scale) + foy,
-                            "w": int(b["w"] / scale),
-                            "h": int(b["h"] / scale),
-                        })
-                        for crop, b in raw_crops
-                    ]
-                else:
-                    face_crops = [
-                        (crop, {
-                            "x": b["x"] + fox,
-                            "y": b["y"] + foy,
-                            "w": b["w"],
-                            "h": b["h"],
-                        })
-                        for crop, b in detector.detect(detection_frame)
-                    ]
+                face_crops = [
+                    (crop, {**b, "x": b["x"] + fox, "y": b["y"] + foy})
+                    for crop, b in detector.detect(detection_frame)
+                ]
 
                 with self._excl_lock:
                     excl = self._excl_rect
@@ -321,12 +297,9 @@ class DetectionWorker(QThread):
                                 and ey <= b["y"] + b["h"] // 2 < ey + eh)
                     ]
 
-                # Cap to MAX_FACES largest faces so API load stays bounded.
+                # Cap to MAX_FACES largest faces (detect() returns largest first) so API load stays bounded.
                 total_detected = len(face_crops)
-                if len(face_crops) > config.MAX_FACES:
-                    face_crops = sorted(
-                        face_crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True
-                    )[:config.MAX_FACES]
+                face_crops = face_crops[:config.MAX_FACES]
                 self.face_count_update.emit(len(face_crops), total_detected)
 
                 bboxes = [b for _, b in face_crops]

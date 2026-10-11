@@ -107,11 +107,13 @@ class DeepfakeInferenceEngine:
         )
 
     def _throttle(self):
-        """Sleep as needed to enforce the 1 request/second rate limit on the free tier."""
-        now = time.perf_counter()
-        elapsed = now - self._last_call_time
+        """Space request starts at least BITMIND_RATE_LIMIT_DELAY_SEC apart (1 request/second free tier)."""
+        # Timed from the previous request's start, not its end: with ~1.8 s responses, waiting a further
+        # second after each response held throughput to one call per ~2.8 s for no rate-limit benefit.
+        elapsed = time.perf_counter() - self._last_call_time
         if elapsed < config.BITMIND_RATE_LIMIT_DELAY_SEC:
             time.sleep(config.BITMIND_RATE_LIMIT_DELAY_SEC - elapsed)
+        self._last_call_time = time.perf_counter()
 
     def _post_once(self, jpeg_bytes: bytes) -> tuple:
         """
@@ -135,19 +137,14 @@ class DeepfakeInferenceEngine:
                 timeout=config.BITMIND_API_TIMEOUT_SEC
             )
         except requests.exceptions.Timeout as e:
-            self._last_call_time = time.perf_counter()
             raise BitmindTransientError(f"Request timed out after {config.BITMIND_API_TIMEOUT_SEC}s") from e
         except requests.exceptions.ConnectionError as e:
             # Covers both DNS failure and connection refused — requests wraps both here.
-            self._last_call_time = time.perf_counter()
             raise BitmindTransientError(f"Connection error: {e}") from e
         except requests.exceptions.RequestException as e:
-            self._last_call_time = time.perf_counter()
             raise BitmindAPIError(f"Request failed: {e}") from e
 
-        t_end = time.perf_counter()
-        api_ms = (t_end - t_start) * 1000
-        self._last_call_time = t_end
+        api_ms = (time.perf_counter() - t_start) * 1000
 
         if response.status_code == 200:
             data = response.json()

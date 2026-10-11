@@ -13,10 +13,19 @@ BITMIND_RETRY_DELAYS_SEC = [1.0, 2.0, 4.0]   # Exponential backoff for transient
 BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive failures before Degraded status; auth errors bypass this
 
 # ── Face Detection ─────────────────────────────────────────────────────────────
-FACE_CONFIDENCE_THRESHOLD = 0.2       # MediaPipe BlazeFace detection confidence
+FACE_CONFIDENCE_THRESHOLD = 0.3       # MediaPipe BlazeFace detection confidence. Raised from 0.2: on FF++
+                                       # frames it removes ~60% of extra (mostly non-face) boxes, which would
+                                       # otherwise use API calls and risk false alerts, for a 0.2-6% per-frame
+                                       # recall cost that the tracker's grace period absorbs.
 BBOX_EXPAND_RATIO = 0.20              # Expand bounding box by 20% on all sides
 ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if exceeded
-DETECTION_UPSCALE = 2.0               # Upscale factor applied to frame before BlazeFace (helps small faces)
+DETECTION_MAX_WIDTH = 960             # Wider frames are downscaled before BlazeFace; crops still come from the
+                                       # full-resolution frame. BlazeFace sees a 128x128 input either way, so
+                                       # upscaling never helped small faces, while detecting at this width cut
+                                       # detect() from ~250 ms to ~8 ms per 2560x1600 frame. Known limitation at
+                                       # any scale: faces under ~12% of the frame width (a 2x2 call gallery) are
+                                       # found in only ~1/3 of frames, under ~8% (3x3) almost never -- draw a
+                                       # detection zone around the participant to make the face relatively larger.
 MAX_FACES = 3                         # Analyze at most this many faces per frame (largest first)
                                        # Faces beyond this limit (smallest-area first) are silently
                                        # dropped every tick, before ever reaching the classification

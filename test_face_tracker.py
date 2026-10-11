@@ -1,4 +1,4 @@
-"""Tests for the pure match_tracks()/_iou() functions and _FaceTracker (no PyQt dependency)."""
+"""Tests for the pure match_tracks()/_iou() functions and _FaceTracker (no QApplication or QThread needed)."""
 
 import config
 from runtime.threads.detection_worker import match_tracks, _iou, _FaceTracker
