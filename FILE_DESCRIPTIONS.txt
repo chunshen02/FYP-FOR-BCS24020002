@@ -321,25 +321,29 @@ functions:
 ----------------------------------------------------------------
 19. benchmark.py
 ----------------------------------------------------------------
-Standalone script for measuring end-to-end pipeline performance.
-It mirrors DetectionWorker's architecture: the main loop (screen
-capture, face detection, tracking, JPEG preprocessing) runs at
-DISPLAY_FPS, while BitMind API calls run round-robin on a
-separate thread, so API latency never counts against frame
-FPS/latency. It runs BENCHMARK_REPEAT passes, each consisting of a
-warmup phase followed by a measurement phase. Per pass it records:
+Standalone script for measuring real-time performance of the whole
+pipeline, BitMind included; it exits with an error if
+BITMIND_API_KEY is not configured. It mirrors DetectionWorker's
+architecture: the main loop (screen capture, face detection,
+tracking, JPEG preprocessing) runs at DISPLAY_FPS, while BitMind
+API calls run round-robin on a separate thread. It runs
+BENCHMARK_REPEAT passes, each consisting of a warmup phase
+followed by a measurement phase. Per pass it records:
   - Main-loop frame latency (ms), split into screen capture, face
     detection, and tracking + JPEG encoding
   - FPS sampled every second
   - CPU utilisation (psutil, system-wide)
   - Peak RAM usage (psutil)
-  - BitMind API response time and call/failure counts (if the API
-    key is configured and a face is visible on screen)
+  - End-to-end detection latency (ms): from the screen capture of
+    a frame to BitMind's verdict on a face in it, split into the
+    BitMind API response time and local processing + queue wait
+  - BitMind call/failure counts (a face must be visible on screen)
 
 After all passes it prints a summary table comparing measured
 values against the targets defined in config.py (TARGET_FPS,
-TARGET_LATENCY_MS, TARGET_CPU_PERCENT, TARGET_RAM_MB) with
-PASS/FAIL status for each metric.
+TARGET_LATENCY_MS, TARGET_DETECTION_LATENCY_MS,
+TARGET_CPU_PERCENT, TARGET_RAM_MB) with PASS/FAIL status for each
+metric.
 
 ----------------------------------------------------------------
 20. evaluation_runner.py
@@ -355,10 +359,13 @@ shared by every method. --limit N takes the first N files per
 folder, and --frames-per-video N samples N frames from the middles
 of N equal segments (N=1 gives the temporal midpoint). Runs each
 image or sampled video frame through the full pipeline — face
-detection, JPEG preprocessing, BitMind API — picking the worst
-(highest P_fake) of the MAX_FACES largest faces; frames with no
-detected face are submitted whole, for pre-cropped datasets. A
-failed API call skips that sample instead of aborting the run.
+detection, JPEG preprocessing, BitMind API — with exactly one
+BitMind call on the largest face, so every score is a single
+BitMind verdict and the metrics measure BitMind's accuracy on the
+face crops the app sends; frames with no detected face are
+submitted whole, for pre-cropped datasets. A failed API call
+(including a malformed response) skips that sample instead of
+aborting the run.
 
 Each result is appended to the CSV as soon as it arrives;
 re-running with the same --csv-path skips completed samples, so an

@@ -65,7 +65,8 @@ DISPLAY_FPS = 15                      # Detection loop tick rate (frames/sec)
 
 # ── Performance Targets ────────────────────────────────────────────────────────
 TARGET_FPS = 10                       # Minimum acceptable throughput (frames/sec)
-TARGET_LATENCY_MS = 100               # Maximum end-to-end latency (ms)
+TARGET_LATENCY_MS = 100               # Maximum per-frame latency of the capture/detection loop (ms)
+TARGET_DETECTION_LATENCY_MS = 5000    # Maximum mean time from screen capture to BitMind verdict (ms)
 TARGET_CPU_PERCENT = 70               # Maximum CPU utilisation (%)
 TARGET_RAM_MB = 800                   # Maximum peak RAM usage (MB)
 

@@ -147,9 +147,14 @@ class DeepfakeInferenceEngine:
         api_ms = (time.perf_counter() - t_start) * 1000
 
         if response.status_code == 200:
-            data = response.json()
-            is_ai = data.get("isAI", False)
-            confidence = float(data.get("confidence", 0.0))
+            # Defaulting missing fields would record a P_fake BitMind never returned (isAI=False,
+            # confidence=0 reads as 100% fake), so a malformed body is a failure, not a score.
+            try:
+                data = response.json()
+                is_ai = data["isAI"]
+                confidence = float(data["confidence"])
+            except (ValueError, KeyError, TypeError) as e:
+                raise BitmindAPIError(f"Malformed response: {response.text}") from e
             p_fake = confidence if is_ai else 1.0 - confidence
             return p_fake, api_ms
         if response.status_code in (401, 403):

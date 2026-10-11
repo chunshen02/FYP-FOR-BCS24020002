@@ -6,7 +6,9 @@ folders of video clips and/or images: one real folder and one or more
 deepfake folders, including non-FaceForensics++ sources such as
 diffusion-model-generated samples. Runs each sample through the same
 face_detector -> preprocessor -> inference pipeline as the live app, without
-the screen-capture/GUI loop.
+the screen-capture/GUI loop. Each sample is scored by exactly one BitMind
+call on its largest face, so the metrics measure BitMind's accuracy on the
+face crops the app sends.
 
 Usage:
     python evaluation_runner.py [dataset_root] [--real-subdir real]
@@ -117,22 +119,13 @@ def _iter_samples(groups: list, frames_per_video: int):
 
 def _classify_sample(frame, detector: FaceDetector, preprocessor: Preprocessor,
                       engine: DeepfakeInferenceEngine, sample_id: str) -> tuple:
-    """
-    Run one frame through the full pipeline; pick the worst (highest P_fake)
-    of the MAX_FACES largest faces, the same faces the live app analyzes.
-    Falls back to submitting the whole frame if no face is detected (common
-    for pre-cropped datasets).
-
-    Returns:
-        (FaceResult, faces_classified: int). Raises BitmindAPIError on failure.
-    """
-    face_crops = detector.detect(frame)[:config.MAX_FACES]
-    crops = [crop for crop, _ in face_crops] or [frame]
-    results = [
-        engine.run_single(preprocessor.process(crop), bbox={}, face_id=f"{sample_id}_{i}")
-        for i, crop in enumerate(crops)
-    ]
-    return max(results, key=lambda r: r.p_fake_raw), len(face_crops)
+    """Classify one frame with a single BitMind call; returns (FaceResult, faces_detected). Raises BitmindAPIError."""
+    faces = detector.detect(frame)
+    # Only the largest face, so each sample's score is exactly one BitMind verdict on the crop the live
+    # app would send; scoring extra faces (often detector false positives) and keeping the max would mix
+    # detector errors into BitMind's accuracy. The whole frame is sent when no face is found (pre-cropped datasets).
+    crop = faces[0][0] if faces else frame
+    return engine.run_single(preprocessor.process(crop), bbox={}, face_id=sample_id), len(faces)
 
 
 def _load_rows(csv_path: str) -> list:

@@ -31,7 +31,7 @@ def test_fast_movement_with_high_iou_keeps_id():
 def test_brief_occlusion_retains_id():
     tracker = _FaceTracker()
     ids_1 = tracker.update([box(100, 100)])
-    for _ in range(GRACE_FRAMES - 1):
+    for _ in range(GRACE_FRAMES):
         tracker.update([])
     ids_2 = tracker.update([box(100, 100)])
     assert ids_1 == ids_2
