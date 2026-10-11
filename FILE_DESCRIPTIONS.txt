@@ -18,7 +18,8 @@ used across the entire project. This includes:
   - File paths (database location)
   - BitMind API endpoint URL and timeout settings
   - Rate limit delay between API requests
-  - MediaPipe face detection confidence threshold
+  - MediaPipe face detection confidence threshold, detection
+    working width (DETECTION_MAX_WIDTH), and faces per frame
   - Bounding box expansion ratio and alignment angle threshold
   - Face crop size and JPEG quality for API submission
   - Fake threshold (FAKE_THRESHOLD) for the binary REAL/DEEPFAKE
@@ -37,7 +38,9 @@ Handles real-time desktop screen capture using the mss library.
 The ScreenCapture class initialises an mss capture context,
 grabs frames from a configurable region of the screen (defaulting
 to the full primary monitor), converts the raw BGRA output to
-BGR numpy arrays, and exposes start(), read(), set_region(), and
+contiguous BGR numpy arrays (a sliced, non-contiguous view would
+make every later OpenCV call copy the whole frame again), and
+exposes start(), read(), set_region(), and
 stop() methods. This module is the source of raw frames that feed
 the detection pipeline.
 
@@ -46,14 +49,23 @@ the detection pipeline.
 ----------------------------------------------------------------
 Performs face detection and alignment on BGR frames using the
 MediaPipe BlazeFace Tasks API. On first run it downloads the
-BlazeFace short-range TFLite model. The FaceDetector class applies
-CLAHE contrast enhancement (on a copy of the frame, for detection
-only) to improve accuracy in low light, detects all faces, expands
-each bounding box by a configurable ratio, optionally applies
-affine rotation alignment if the face tilt exceeds a threshold,
-and returns a list of (crop, bbox) tuples. The bbox dictionary
-contains pixel coordinates used by the overlay renderer and
-inference engine.
+BlazeFace short-range TFLite model. The FaceDetector class runs
+detection on a copy of the frame downscaled to at most
+DETECTION_MAX_WIDTH pixels wide (BlazeFace's input is only
+128x128, so a larger detection image costs time without finding
+smaller faces), with CLAHE contrast enhancement applied to that
+copy to improve accuracy in low light. Each detected box is mapped
+back to the full-resolution frame, expanded by a configurable
+ratio, and cropped from the full-resolution frame so the API sees
+native pixels; if the face tilt exceeds a threshold, the crop is
+rotated upright about the face's own centre. Returns a list of
+(crop, bbox) tuples sorted largest face first, with bbox in
+full-resolution frame pixels, used by the overlay renderer and
+inference engine. DetectionWorker and all evaluation scripts share
+this one detection front end. Known limitation: faces narrower
+than ~12% of the frame width (e.g. a 2x2 video-call gallery) are
+found in only about a third of frames, at any scale; drawing a
+detection zone around one participant works around it.
 
 ----------------------------------------------------------------
 5. runtime/detection/preprocessor.py
@@ -61,7 +73,8 @@ inference engine.
 Converts a raw BGR face crop (numpy array) into JPEG-encoded
 bytes ready for HTTP submission to the BitMind API. The
 Preprocessor class resizes the crop to the configured square
-size (FACE_CROP_SIZE) using cubic interpolation, applies gamma
+size (FACE_CROP_SIZE) — area interpolation when shrinking, which
+avoids aliasing artifacts, and cubic when enlarging — applies gamma
 correction to brighten crops detected as low-light, and encodes
 the result as JPEG at the configured quality (FACE_CROP_JPEG_QUALITY).
 process_with_array() additionally returns the pre-encode BGR array
@@ -85,7 +98,8 @@ returns classification results. Key components:
 
   - DeepfakeInferenceEngine: maintains a persistent requests
     Session with the Bearer token, enforces the 1 request/second
-    rate limit on the free tier, base64-encodes the JPEG payload,
+    rate limit on the free tier by spacing request start times
+    (not the gap after each response), base64-encodes the JPEG payload,
     POSTs it to the API, and parses the isAI + confidence fields
     to derive P_fake.
 
@@ -114,13 +128,13 @@ continuously in the background. Architecture:
 
   - Main loop (~15 FPS): captures a screen frame, masks the app's
     own window region for display, optionally crops to a
-    user-selected detection zone, upscales for small-face
-    detection, runs face detection, assigns stable IDs via
-    _FaceTracker, prepares JPEG crops, emits annotated frames,
-    FaceResult lists, and pending bboxes to the GUI thread via
-    Qt signals. Also emits a low-light warning based on a cheap
-    downsampled brightness check and the count of shown vs. total
-    detected faces.
+    user-selected detection zone, runs face detection (on a
+    downscaled copy), keeps the MAX_FACES largest faces, assigns
+    stable IDs via _FaceTracker, prepares JPEG crops, emits
+    annotated frames, FaceResult lists, and pending bboxes to the
+    GUI thread via Qt signals. Also emits a low-light warning
+    based on a cheap downsampled brightness check and the count
+    of shown vs. total detected faces.
 
   - API daemon thread: round-robins through all currently
     visible faces, calling the BitMind API once per face per
@@ -188,10 +202,11 @@ and background threads together. Responsibilities include:
 11. runtime/gui/video_widget.py
 ----------------------------------------------------------------
 A custom QWidget subclass responsible for displaying live video
-frames with face detection overlays. It converts incoming BGR
-numpy frames to QPixmap, scales them to fit the widget while
-preserving aspect ratio, and uses a QPainter-based paintEvent
-to draw:
+frames with face detection overlays. It keeps the latest BGR
+numpy frame and, only when painting, scales it with OpenCV to fit
+the widget (aspect ratio preserved) before converting it to a
+QPixmap, so the full screen resolution is never converted in the
+GUI thread. A QPainter-based paintEvent draws:
   - Colour-coded bounding boxes (green REAL / red DEEPFAKE)
     around analyzed faces, and dashed grey placeholder boxes with
     an "Analyzing..." badge for faces detected but not yet scored.
@@ -202,8 +217,8 @@ to draw:
     top-left corner while a feed is active.
 It also supports drag-to-select a rectangular detection zone
 (left-click drag to set, right-click to clear), emitted via the
-region_selected signal, and exposes grab_screenshot() to capture
-the current frame as a QPixmap for saving to disk.
+region_selected signal, and exposes has_frame so the main window's
+screenshot action can tell whether a feed is active.
 
 ----------------------------------------------------------------
 12. runtime/gui/gauge_widget.py
@@ -306,60 +321,67 @@ functions:
 ----------------------------------------------------------------
 19. benchmark.py
 ----------------------------------------------------------------
-Standalone script for measuring end-to-end pipeline performance.
-It mirrors DetectionWorker's architecture: the main loop (screen
-capture, upscaled face detection, tracking, JPEG preprocessing)
-runs at DISPLAY_FPS, while BitMind API calls run round-robin on a
-separate thread, so API latency never counts against frame
-FPS/latency. It runs BENCHMARK_REPEAT passes, each consisting of a
-warmup phase followed by a measurement phase. Per pass it records:
-  - Main-loop frame latency (ms)
+Standalone script for measuring real-time performance of the whole
+pipeline, BitMind included; it exits with an error if
+BITMIND_API_KEY is not configured. It mirrors DetectionWorker's
+architecture: the main loop (screen capture, face detection,
+tracking, JPEG preprocessing) runs at DISPLAY_FPS, while BitMind
+API calls run round-robin on a separate thread. It runs
+BENCHMARK_REPEAT passes, each consisting of a warmup phase
+followed by a measurement phase. Per pass it records:
+  - Main-loop frame latency (ms), split into screen capture, face
+    detection, and tracking + JPEG encoding
   - FPS sampled every second
   - CPU utilisation (psutil, system-wide)
   - Peak RAM usage (psutil)
-  - BitMind API response time and call/failure counts (if the API
-    key is configured and a face is visible on screen)
+  - End-to-end detection latency (ms): from the screen capture of
+    a frame to BitMind's verdict on a face in it, split into the
+    BitMind API response time and local processing + queue wait
+  - BitMind call/failure counts (a face must be visible on screen)
 
 After all passes it prints a summary table comparing measured
 values against the targets defined in config.py (TARGET_FPS,
-TARGET_LATENCY_MS, TARGET_CPU_PERCENT, TARGET_RAM_MB) with
-PASS/FAIL status for each metric.
+TARGET_LATENCY_MS, TARGET_DETECTION_LATENCY_MS,
+TARGET_CPU_PERCENT, TARGET_RAM_MB) with PASS/FAIL status for each
+metric.
 
 ----------------------------------------------------------------
 20. evaluation_runner.py
 ----------------------------------------------------------------
 Standalone script that evaluates deepfake detection accuracy
-against a labelled folder of images and/or video clips
-(<root>/real/ and <root>/deepfake/; defaults to test_samples/,
-minimum 10 files total, at least 1 per class). Runs each image or
-sampled video frame through the full pipeline — face detection,
-JPEG preprocessing, BitMind API — picking the worst (highest
-P_fake) face when multiple are detected; frames with no detected
-face are submitted whole, for pre-cropped datasets. A failed API
-call skips that sample instead of aborting the run. Prints a
-per-sample result table, then overall and per-class accuracy, mean
-P_fake per class, and mean API response time. Results are written
-to a CSV file and, unless --no-db is passed, to the session
-database with ground truth labels for
-compute_classification_metrics(); such a run also appears as a
+against labelled folders of images and/or video clips: one real
+folder and one or more deepfake folders (defaults to
+test_samples/real/ and test_samples/deepfake/; minimum 10 files
+total, at least 1 per folder). A FaceForensics++ root is evaluated
+directly from its videos via --real-subdir original --fake-subdir
+<Method> [<Method> ...]; the real set is classified once and
+shared by every method. --limit N takes the first N files per
+folder, and --frames-per-video N samples N frames from the middles
+of N equal segments (N=1 gives the temporal midpoint). Runs each
+image or sampled video frame through the full pipeline — face
+detection, JPEG preprocessing, BitMind API — with exactly one
+BitMind call on the largest face, so every score is a single
+BitMind verdict and the metrics measure BitMind's accuracy on the
+face crops the app sends; frames with no detected face are
+submitted whole, for pre-cropped datasets. A failed API call
+(including a malformed response) skips that sample instead of
+aborting the run.
+
+Each result is appended to the CSV as soon as it arrives;
+re-running with the same --csv-path skips completed samples, so an
+interrupted run resumes and failed samples are retried. The
+summary reports real-face specificity and, per deepfake folder,
+TP/FN, recall, precision, accuracy, F1, ROC-AUC and mean P_fake,
+plus a threshold sweep (false-positive rate and per-method recall
+at thresholds 0.1-0.9) for recalibrating FAKE_THRESHOLD.
+--summary-only re-prints it from the CSV without any API calls,
+recomputing decisions with the current FAKE_THRESHOLD. Unless
+--no-db is passed, results are also written to the session
+database with ground truth labels; such a run also appears as a
 session in the app's history table.
 
 ----------------------------------------------------------------
-21. prepare_ff_samples.py
-----------------------------------------------------------------
-Standalone script that extracts labelled frames from a
-FaceForensics++ dataset and saves them into test_samples/real/ and
-test_samples/deepfake/ for use with evaluation_runner.py. Auto-detects
-whether the dataset root is the flat Kaggle repack layout
-(<root>/original/, <root>/<Method>/) or the standard nested FF++
-layout (<root>/original_sequences/..., <root>/manipulated_sequences/...).
-Configurable via CLI flags for target frame counts, manipulation
-method (Deepfakes / Face2Face / FaceSwap / NeuralTextures /
-FaceShifter / DeepFakeDetection), and compression quality
-(c0 / c23 / c40).
-
-----------------------------------------------------------------
-22. test_face_tracker.py / test_history.py
+21. test_face_tracker.py / test_history.py
 ----------------------------------------------------------------
 Offline pytest suite (no network, no API calls); run with
 `pytest` from the project root.
@@ -371,6 +393,25 @@ Offline pytest suite (no network, no API calls); run with
     delete_session, clear_history) and the MainWindow history
     table, all against a temporary SQLite file so session_log.db
     is never read or modified.
+
+----------------------------------------------------------------
+22. tracking_eval.py
+----------------------------------------------------------------
+Standalone offline evaluation of face-tracking ID stability on a
+FaceForensics++ dataset (default subsets: original,
+DeepFakeDetection, Deepfakes). Each video runs through the same
+detection front end as DetectionWorker and is sampled at roughly
+DISPLAY_FPS; no BitMind API calls are made. Since FF++ has no
+identity annotations, it measures proxies per video: the share of
+face-bearing ticks held by the most frequent ID, "tracker breaks"
+(a face re-IDed while its old track was still within the grace
+period) versus "gap breaks" (re-IDed after a detection gap longer
+than the grace period), and extra detections (mostly detector
+false positives). Runs videos in parallel worker processes,
+appends one CSV row per video so an interrupted run resumes, and
+prints per-subset statistics, a paired original-vs-manipulated
+comparison on the same source clips, and the worst videos for
+manual review. --summary-only re-prints the summary from the CSV.
 
 ================================================================
   END OF FILE DESCRIPTIONS

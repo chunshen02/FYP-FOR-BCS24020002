@@ -36,12 +36,15 @@ def _get_rotation_angle(keypoints, img_w: int, img_h: int) -> float:
     return math.degrees(math.atan2(ly - ry, lx - rx))
 
 
-def _align_face(image: np.ndarray, angle: float) -> np.ndarray:
-    h, w = image.shape[:2]
-    center = (w // 2, h // 2)
-    mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+def _align_face(image: np.ndarray, box: tuple, angle: float) -> np.ndarray:
+    """Rotate the (x_min, y_min, x_max, y_max) face region upright about its own centre and return it."""
+    x_min, y_min, x_max, y_max = box
+    # Rotating about the frame centre instead would carry an off-centre face out of its own box.
+    mat = cv2.getRotationMatrix2D(((x_min + x_max) / 2, (y_min + y_max) / 2), angle, 1.0)
+    # Shift the output origin to the box corner so only the crop region is computed, not the whole frame.
+    mat[:, 2] -= (x_min, y_min)
     return cv2.warpAffine(
-        image, mat, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
+        image, mat, (x_max - x_min, y_max - y_min), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
     )
 
 
@@ -75,21 +78,24 @@ class FaceDetector:
 
     def detect(self, frame_bgr: np.ndarray) -> list:
         """
-        Detect and align all faces in a BGR frame.
+        Detect and align all faces in a BGR frame, detecting on a copy downscaled to DETECTION_MAX_WIDTH.
 
         Args:
             frame_bgr: BGR numpy array from screen capture.
 
         Returns:
-            List of (crop, bbox) tuples, one per detected face.
-            crop: aligned BGR numpy array; bbox: {"x", "y", "w", "h"} in frame pixels.
+            List of (crop, bbox) tuples, one per detected face, largest first.
+            crop: aligned BGR numpy array cut from frame_bgr at full resolution;
+            bbox: {"x", "y", "w", "h"} in frame_bgr pixels.
             Returns an empty list if no faces are detected.
         """
         h, w = frame_bgr.shape[:2]
+        scale = min(1.0, config.DETECTION_MAX_WIDTH / w)
+        small = cv2.resize(frame_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1.0 else frame_bgr
 
         # CLAHE on the L channel improves face detection in low-light conditions.
         # Crops are still taken from the original frame to preserve image fidelity for the API.
-        lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
         l_ch, a_ch, b_ch = cv2.split(lab)
         detection_bgr = cv2.cvtColor(
             cv2.merge([self._clahe.apply(l_ch), a_ch, b_ch]), cv2.COLOR_LAB2BGR
@@ -104,37 +110,25 @@ class FaceDetector:
         crops = []
         for det in results.detections:
             bb = det.bounding_box
-            x_min = bb.origin_x
-            y_min = bb.origin_y
-            x_max = bb.origin_x + bb.width
-            y_max = bb.origin_y + bb.height
-
             x_min, y_min, x_max, y_max = _expand_bbox(
-                x_min, y_min, x_max, y_max, w, h, config.BBOX_EXPAND_RATIO
+                bb.origin_x / scale, bb.origin_y / scale,
+                (bb.origin_x + bb.width) / scale, (bb.origin_y + bb.height) / scale,
+                w, h, config.BBOX_EXPAND_RATIO,
             )
             x_min, y_min, x_max, y_max = map(int, (x_min, y_min, x_max, y_max))
+            if x_max <= x_min or y_max <= y_min:
+                continue
 
-            if det.keypoints and len(det.keypoints) >= 2:
-                angle = _get_rotation_angle(det.keypoints, w, h)
-                if abs(angle) > config.ALIGNMENT_ANGLE_THRESHOLD:
-                    crop = _align_face(frame_bgr.copy(), angle)[y_min:y_max, x_min:x_max]
-                else:
-                    crop = frame_bgr[y_min:y_max, x_min:x_max].copy()
+            # Keypoints are normalised, so the angle is the same at either resolution.
+            angle = _get_rotation_angle(det.keypoints, w, h) if det.keypoints and len(det.keypoints) >= 2 else 0.0
+            if abs(angle) > config.ALIGNMENT_ANGLE_THRESHOLD:
+                crop = _align_face(frame_bgr, (x_min, y_min, x_max, y_max), angle)
             else:
                 crop = frame_bgr[y_min:y_max, x_min:x_max].copy()
 
-            if crop.size == 0:
-                continue
+            crops.append((crop, {"x": x_min, "y": y_min, "w": x_max - x_min, "h": y_max - y_min}))
 
-            bbox = {
-                "x": x_min,
-                "y": y_min,
-                "w": x_max - x_min,
-                "h": y_max - y_min,
-            }
-            crops.append((crop, bbox))
-
-        return crops
+        return sorted(crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True)
 
     def close(self):
         """Release MediaPipe detector resources."""
