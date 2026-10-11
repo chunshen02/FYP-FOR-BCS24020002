@@ -7,7 +7,7 @@ stability is measured by proxy: most clips show one main subject, whose
 face should keep a single ID for the whole clip.
 
 Each video goes through the same detection front end as DetectionWorker
-(DETECTION_MAX_WIDTH, MAX_FACES largest faces) and is sampled at roughly
+(DETECTION_MAX_WIDTH, tiling, MAX_FACES most confident faces) and is sampled at roughly
 DISPLAY_FPS, so the tracker sees the same per-tick motion as in the live
 app. No BitMind API calls are made.
 

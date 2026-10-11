@@ -121,19 +121,11 @@ def _classify_sample(frame, detector: FaceDetector, preprocessor: Preprocessor,
                       engine: DeepfakeInferenceEngine, sample_id: str) -> tuple:
     """Classify one frame with a single BitMind call; returns (FaceResult, faces_detected). Raises BitmindAPIError."""
     faces = detector.detect(frame)
-    # Only the largest face, so each sample's score is exactly one BitMind verdict on the crop the live
+    # Only the most confident face, so each sample's score is exactly one BitMind verdict on the crop the live
     # app would send; scoring extra faces (often detector false positives) and keeping the max would mix
     # detector errors into BitMind's accuracy. The whole frame is sent when no face is found (pre-cropped datasets).
     crop = faces[0][0] if faces else frame
     return engine.run_single(preprocessor.process(crop), bbox={}, face_id=sample_id), len(faces)
-
-<<<<<<< HEAD
-    Returns:
-        (FaceResult, faces_detected: int). Raises BitmindAPIError on failure.
-    """
-    face_crops = detector.detect(frame)
-=======
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
 
 def _load_rows(csv_path: str) -> list:
     """Return the result rows already in csv_path (none if it does not exist), with numeric fields parsed."""

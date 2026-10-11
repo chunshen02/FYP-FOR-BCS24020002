@@ -18,13 +18,9 @@ used across the entire project. This includes:
   - File paths (database location)
   - BitMind API endpoint URL and timeout settings
   - Rate limit delay between API requests
-<<<<<<< HEAD
-  - MediaPipe face detection confidence threshold and tiled
-    detection settings (grid size, tile overlap, duplicate merging)
-=======
   - MediaPipe face detection confidence threshold, detection
-    working width (DETECTION_MAX_WIDTH), and faces per frame
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+    working width (DETECTION_MAX_WIDTH), tiled detection settings
+    (grid size, tile overlap, duplicate merging), and faces per frame
   - Bounding box expansion ratio and alignment angle threshold
   - Face crop size and JPEG quality for API submission
   - Fake threshold (FAKE_THRESHOLD) for the binary REAL/DEEPFAKE
@@ -54,37 +50,22 @@ the detection pipeline.
 ----------------------------------------------------------------
 Performs face detection and alignment on BGR frames using the
 MediaPipe BlazeFace Tasks API. On first run it downloads the
-<<<<<<< HEAD
-BlazeFace short-range TFLite model. The FaceDetector class applies
-CLAHE contrast enhancement (on a copy of the frame, for detection
-only) when the frame is dark, runs BlazeFace on the full frame plus
-a grid of overlapping tiles (so small faces, e.g. in a meeting's
-gallery view, are not lost to the model's 128x128 input), merges
-duplicate detections across tiles, expands each bounding box by a
-configurable ratio, rotates the face upright about its own centre
-if its tilt exceeds a threshold, and returns a list of (crop, bbox)
-tuples. The bbox dictionary
-contains pixel coordinates used by the overlay renderer and
-inference engine.
-=======
 BlazeFace short-range TFLite model. The FaceDetector class runs
 detection on a copy of the frame downscaled to at most
-DETECTION_MAX_WIDTH pixels wide (BlazeFace's input is only
-128x128, so a larger detection image costs time without finding
-smaller faces), with CLAHE contrast enhancement applied to that
-copy to improve accuracy in low light. Each detected box is mapped
-back to the full-resolution frame, expanded by a configurable
-ratio, and cropped from the full-resolution frame so the API sees
-native pixels; if the face tilt exceeds a threshold, the crop is
-rotated upright about the face's own centre. Returns a list of
-(crop, bbox) tuples sorted largest face first, with bbox in
-full-resolution frame pixels, used by the overlay renderer and
-inference engine. DetectionWorker and all evaluation scripts share
-this one detection front end. Known limitation: faces narrower
-than ~12% of the frame width (e.g. a 2x2 video-call gallery) are
-found in only about a third of frames, at any scale; drawing a
-detection zone around one participant works around it.
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+DETECTION_MAX_WIDTH pixels wide, applying CLAHE contrast
+enhancement to that copy when the frame is dark. It runs BlazeFace
+on the full detection image plus a grid of overlapping tiles (so
+small faces, e.g. in a meeting's gallery view, are not lost to the
+model's 128x128 input) and merges duplicate detections across
+tiles. Each detected box is mapped back to the full-resolution
+frame, expanded by a configurable ratio, and cropped from the
+full-resolution frame so the API sees native pixels; if the face
+tilt exceeds a threshold, the crop is rotated upright about the
+face's own centre. Returns a list of (crop, bbox) tuples sorted
+most confident face first, with bbox in full-resolution frame
+pixels, used by the overlay renderer and inference engine.
+DetectionWorker and all evaluation scripts share this one
+detection front end.
 
 ----------------------------------------------------------------
 5. runtime/detection/preprocessor.py
@@ -147,23 +128,14 @@ continuously in the background. Architecture:
 
   - Main loop (~15 FPS): captures a screen frame, masks the app's
     own window region for display, optionally crops to a
-<<<<<<< HEAD
-    user-selected detection zone, runs face detection, assigns
-    stable IDs via _FaceTracker, queues crops of faces that need
-    (re-)classification, emits annotated frames,
-    FaceResult lists, and pending bboxes to the GUI thread via
-    Qt signals. Also emits a low-light warning based on a cheap
-    downsampled brightness check and the count of shown vs. total
-    detected faces.
-=======
-    user-selected detection zone, runs face detection (on a
-    downscaled copy), keeps the MAX_FACES largest faces, assigns
-    stable IDs via _FaceTracker, prepares JPEG crops, emits
-    annotated frames, FaceResult lists, and pending bboxes to the
-    GUI thread via Qt signals. Also emits a low-light warning
-    based on a cheap downsampled brightness check and the count
-    of shown vs. total detected faces.
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+    user-selected detection zone, runs face detection, keeps the
+    MAX_FACES most confident faces, assigns stable IDs via
+    _FaceTracker, queues crops of faces that need
+    (re-)classification, emits annotated frames, FaceResult
+    lists, and pending bboxes to the GUI thread via Qt signals.
+    Also emits a low-light warning based on a cheap downsampled
+    brightness check and the count of shown vs. total detected
+    faces.
 
   - API daemon thread: round-robins through all queued faces,
     JPEG-encoding each crop and calling the BitMind API once per
@@ -354,27 +326,16 @@ functions:
 ----------------------------------------------------------------
 19. benchmark.py
 ----------------------------------------------------------------
-<<<<<<< HEAD
-Standalone script for measuring end-to-end pipeline performance.
-It mirrors DetectionWorker's architecture: the main loop (screen
-capture, tiled face detection, tracking) runs at DISPLAY_FPS,
-while JPEG preprocessing and BitMind API calls run round-robin on
-a separate thread, so API latency never counts against frame
-FPS/latency. It runs BENCHMARK_REPEAT passes, each consisting of a
-warmup phase followed by a measurement phase. Per pass it records:
-  - Main-loop frame latency (ms)
-=======
 Standalone script for measuring real-time performance of the whole
 pipeline, BitMind included; it exits with an error if
 BITMIND_API_KEY is not configured. It mirrors DetectionWorker's
-architecture: the main loop (screen capture, face detection,
-tracking, JPEG preprocessing) runs at DISPLAY_FPS, while BitMind
+architecture: the main loop (screen capture, tiled face detection,
+tracking) runs at DISPLAY_FPS, while JPEG preprocessing and BitMind
 API calls run round-robin on a separate thread. It runs
 BENCHMARK_REPEAT passes, each consisting of a warmup phase
 followed by a measurement phase. Per pass it records:
   - Main-loop frame latency (ms), split into screen capture, face
-    detection, and tracking + JPEG encoding
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+    detection, and tracking
   - FPS sampled every second
   - CPU utilisation (psutil, system-wide)
   - Peak RAM usage (psutil)
