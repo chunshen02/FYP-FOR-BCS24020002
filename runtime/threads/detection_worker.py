@@ -286,7 +286,11 @@ class DetectionWorker(QThread):
                     fox, foy = 0, 0
 
                 face_crops = [
+<<<<<<< HEAD
                     (crop, {"x": b["x"] + fox, "y": b["y"] + foy, "w": b["w"], "h": b["h"]})
+=======
+                    (crop, {**b, "x": b["x"] + fox, "y": b["y"] + foy})
+>>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
                     for crop, b in detector.detect(detection_frame)
                 ]
 
@@ -300,6 +304,7 @@ class DetectionWorker(QThread):
                                 and ey <= b["y"] + b["h"] // 2 < ey + eh)
                     ]
 
+<<<<<<< HEAD
                 # Cap to the MAX_FACES most confident faces (detect() returns them
                 # in that order) so API load stays bounded. Ranking by box area
                 # instead let one large low-confidence false positive (e.g. on a
@@ -310,6 +315,12 @@ class DetectionWorker(QThread):
                 if face_counts != last_face_counts:
                     self.face_count_update.emit(*face_counts)
                     last_face_counts = face_counts
+=======
+                # Cap to MAX_FACES largest faces (detect() returns largest first) so API load stays bounded.
+                total_detected = len(face_crops)
+                face_crops = face_crops[:config.MAX_FACES]
+                self.face_count_update.emit(len(face_crops), total_detected)
+>>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
 
                 bboxes = [b for _, b in face_crops]
                 with self._inflight_lock:

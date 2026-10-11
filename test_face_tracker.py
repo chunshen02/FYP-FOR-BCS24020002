@@ -1,4 +1,4 @@
-"""Tests for the pure match_tracks()/_iou() functions and _FaceTracker (no PyQt dependency)."""
+"""Tests for the pure match_tracks()/_iou() functions and _FaceTracker (no QApplication or QThread needed)."""
 
 import config
 from runtime.threads.detection_worker import match_tracks, _iou, _FaceTracker
@@ -31,7 +31,7 @@ def test_fast_movement_with_high_iou_keeps_id():
 def test_brief_occlusion_retains_id():
     tracker = _FaceTracker()
     ids_1 = tracker.update([box(100, 100)])
-    for _ in range(GRACE_FRAMES - 1):
+    for _ in range(GRACE_FRAMES):
         tracker.update([])
     ids_2 = tracker.update([box(100, 100)])
     assert ids_1 == ids_2

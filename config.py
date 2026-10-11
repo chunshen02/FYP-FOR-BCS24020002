@@ -13,9 +13,13 @@ BITMIND_RETRY_DELAYS_SEC = [1.0, 2.0, 4.0]   # Exponential backoff for transient
 BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive failures before Degraded status; auth errors bypass this
 
 # ── Face Detection ─────────────────────────────────────────────────────────────
-FACE_CONFIDENCE_THRESHOLD = 0.2       # MediaPipe BlazeFace detection confidence
+FACE_CONFIDENCE_THRESHOLD = 0.3       # MediaPipe BlazeFace detection confidence. Raised from 0.2: on FF++
+                                       # frames it removes ~60% of extra (mostly non-face) boxes, which would
+                                       # otherwise use API calls and risk false alerts, for a 0.2-6% per-frame
+                                       # recall cost that the tracker's grace period absorbs.
 BBOX_EXPAND_RATIO = 0.20              # Expand bounding box by 20% on all sides
 ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if exceeded
+<<<<<<< HEAD
 # BlazeFace downsamples every input to 128x128, so upscaling the frame never
 # helps small faces — running it on overlapping sub-tiles does (each tile is
 # downsampled less). The full frame is always run too, for faces too large
@@ -27,6 +31,17 @@ DETECTION_TILE_OVERLAP = 0.25         # Each tile extends this fraction past its
 DETECTION_DUPLICATE_OVERLAP = 0.5     # Intersection / smaller-box area above which two detections are one face
 MAX_FACES = 3                         # Analyze at most this many faces per frame (most confident first)
                                        # Faces beyond this limit (least confident first) are silently
+=======
+DETECTION_MAX_WIDTH = 960             # Wider frames are downscaled before BlazeFace; crops still come from the
+                                       # full-resolution frame. BlazeFace sees a 128x128 input either way, so
+                                       # upscaling never helped small faces, while detecting at this width cut
+                                       # detect() from ~250 ms to ~8 ms per 2560x1600 frame. Known limitation at
+                                       # any scale: faces under ~12% of the frame width (a 2x2 call gallery) are
+                                       # found in only ~1/3 of frames, under ~8% (3x3) almost never -- draw a
+                                       # detection zone around the participant to make the face relatively larger.
+MAX_FACES = 3                         # Analyze at most this many faces per frame (largest first)
+                                       # Faces beyond this limit (smallest-area first) are silently
+>>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
                                        # dropped every tick, before ever reaching the classification
                                        # queue -- not delayed, not queued, not logged. A meeting with
                                        # more than MAX_FACES participants on screen will never have
@@ -61,7 +76,8 @@ DISPLAY_FPS = 15                      # Detection loop tick rate (frames/sec)
 
 # ── Performance Targets ────────────────────────────────────────────────────────
 TARGET_FPS = 10                       # Minimum acceptable throughput (frames/sec)
-TARGET_LATENCY_MS = 100               # Maximum end-to-end latency (ms)
+TARGET_LATENCY_MS = 100               # Maximum per-frame latency of the capture/detection loop (ms)
+TARGET_DETECTION_LATENCY_MS = 5000    # Maximum mean time from screen capture to BitMind verdict (ms)
 TARGET_CPU_PERCENT = 70               # Maximum CPU utilisation (%)
 TARGET_RAM_MB = 800                   # Maximum peak RAM usage (MB)
 

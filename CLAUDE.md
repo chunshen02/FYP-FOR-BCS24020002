@@ -25,6 +25,17 @@ Before reporting any task as complete:
    ```
 3. If any check fails, fix the error before finishing — do not leave broken code.
 
+## Do Not Run Scripts After Writing Them
+
+- After writing or modifying a script (tests, evaluation, benchmark, data
+  preparation, etc.), do **not** run it immediately. The user runs scripts
+  themselves in the VS Code terminal (see `.vscode/tasks.json`) so the output
+  is visible to them.
+- The syntax and import checks above are still required; they do not execute
+  the script's main logic.
+- Instead of running it, tell the user how to run it (the VS Code task name
+  or the exact command) and what output to expect.
+
 ## Project Stack & Pinned Versions
 
 | Component        | Library / Tool        | Version       |

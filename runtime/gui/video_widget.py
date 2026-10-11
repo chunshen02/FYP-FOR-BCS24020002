@@ -61,6 +61,15 @@ _LIVE_FONT = QFont("Segoe UI", 11)
 _LIVE_FONT.setBold(True)
 
 
+def _fit_pixmap(frame_bgr: np.ndarray, max_w: int, max_h: int) -> QPixmap:
+    """Scale a BGR frame to fit max_w x max_h (aspect ratio kept) and convert it to a QPixmap."""
+    h, w = frame_bgr.shape[:2]
+    k = min(max_w / w, max_h / h)
+    size = (max(1, int(w * k)), max(1, int(h * k)))
+    scaled = cv2.resize(frame_bgr, size, interpolation=cv2.INTER_AREA if k < 1 else cv2.INTER_LINEAR)
+    return QPixmap.fromImage(QImage(scaled.data, size[0], size[1], 3 * size[0], QImage.Format.Format_BGR888))
+
+
 class VideoWidget(QWidget):
     """
     Custom widget that displays live video frames with face detection overlays.
@@ -83,7 +92,7 @@ class VideoWidget(QWidget):
         self.setMinimumHeight(300)
         self.setStyleSheet("background-color: #000000;")
 
-        self._current_pixmap = None
+        self._current_frame = None
         self._current_results = []
         self._current_pending_bboxes = []
         self._current_rechecking_bboxes = []
@@ -106,6 +115,7 @@ class VideoWidget(QWidget):
     def update_frame(self, frame: np.ndarray, results: list, pending_bboxes: list,
                       rechecking_results: list):
         """Update the displayed frame, analyzed results, and pending/rechecking placeholders."""
+<<<<<<< HEAD
         # Hidden in Mini mode — skip the per-frame resize and QPixmap conversion.
         if not self.isVisible():
             return
@@ -119,6 +129,13 @@ class VideoWidget(QWidget):
         display = cv2.resize(frame, (display_w, display_h), interpolation=cv2.INTER_AREA)
         qt_image = QImage(display.data, display_w, display_h, 3 * display_w, QImage.Format.Format_BGR888)
         self._current_pixmap = QPixmap.fromImage(qt_image)
+=======
+        # Converted to a pixmap in paintEvent at display size only (~1.4 ms vs ~7 ms for converting
+        # the full 2560x1600 frame here), and frames Qt never paints cost nothing.
+        self._current_frame = frame
+        self._frame_size = (frame.shape[1], frame.shape[0])
+        self._cached_scaled_pixmap = None  # invalidate on new frame
+>>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
         self._current_results = results
         self._current_pending_bboxes = pending_bboxes
         self._current_rechecking_bboxes = [r.bbox for r in rechecking_results]
@@ -126,19 +143,25 @@ class VideoWidget(QWidget):
 
     def clear(self):
         """Clear the displayed frame."""
+<<<<<<< HEAD
         self._current_pixmap = None
+=======
+        self._current_frame = None
+        self._cached_scaled_pixmap = None
+>>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
         self._current_results = []
         self._current_pending_bboxes = []
         self._current_rechecking_bboxes = []
         self._recheck_hitboxes = []
         self.update()
 
-    def grab_screenshot(self) -> QPixmap | None:
-        """Return a QPixmap of the current frame, or None if no frame is active."""
-        return self._current_pixmap
+    @property
+    def has_frame(self) -> bool:
+        """Whether a live frame is currently displayed."""
+        return self._current_frame is not None
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and self._current_pixmap is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self._current_frame is not None:
             pos = event.position().toPoint()
             for rect, face_id in self._recheck_hitboxes:
                 if rect.contains(pos):
@@ -226,7 +249,7 @@ class VideoWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
 
-        if self._current_pixmap is None:
+        if self._current_frame is None:
             painter.fillRect(self.rect(), QColor("#000000"))
             font = QFont("Segoe UI", 13)
             painter.setFont(font)
@@ -239,12 +262,25 @@ class VideoWidget(QWidget):
             painter.end()
             return
 
+<<<<<<< HEAD
         # The pixmap is already display-sized by update_frame; after a widget
         # resize it catches up on the next frame (~66 ms at DISPLAY_FPS=15).
         pixmap = self._current_pixmap
         x_offset = (self.width() - pixmap.width()) // 2
         y_offset = (self.height() - pixmap.height()) // 2
         self._display_size = (pixmap.width(), pixmap.height())
+=======
+        widget_size = self.size()
+        current_w_size = (widget_size.width(), widget_size.height())
+        if self._cached_scaled_pixmap is None or self._cached_widget_size != current_w_size:
+            self._cached_scaled_pixmap = _fit_pixmap(self._current_frame, *current_w_size)
+            self._cached_widget_size = current_w_size
+        scaled_pixmap = self._cached_scaled_pixmap
+
+        x_offset = (widget_size.width() - scaled_pixmap.width()) // 2
+        y_offset = (widget_size.height() - scaled_pixmap.height()) // 2
+        self._display_size = (scaled_pixmap.width(), scaled_pixmap.height())
+>>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
         self._offset = (x_offset, y_offset)
 
         painter.drawPixmap(x_offset, y_offset, pixmap)
@@ -447,7 +483,7 @@ class VideoWidget(QWidget):
 
     def _toggle_blink(self):
         self._blink_on = not self._blink_on
-        if self._current_pixmap is not None:
+        if self._current_frame is not None:
             self.update()
 
     def _draw_live_indicator(self, painter: QPainter):

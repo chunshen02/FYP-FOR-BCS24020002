@@ -1080,7 +1080,7 @@ class MainWindow(QMainWindow):
         under capture_affinity_lock so DetectionWorker's live capture loop
         can never overlap that window and pick up the un-excluded app.
         """
-        if self._video_widget.grab_screenshot() is None:
+        if not self._video_widget.has_frame:
             self._session_log_event("INFO", "Screenshot skipped: no active feed.")
             return
 
