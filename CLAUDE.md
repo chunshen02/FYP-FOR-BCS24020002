@@ -55,7 +55,7 @@ runtime/
   detection/
     face_detector.py             # MediaPipe BlazeFace → aligned face crops
     preprocessor.py              # BGR crop → JPEG bytes (cv2.imencode)
-    inference.py                 # JPEG bytes → BitMind API → FaceResult + EMA
+    inference.py                 # JPEG bytes → BitMind API → FaceResult
   threads/
     detection_worker.py          # QThread: capture → detect → infer → emit
     alert_thread.py              # QThread: watches FaceResult stream, fires alerts
@@ -64,7 +64,7 @@ runtime/
     video_widget.py              # Live frame display widget
     session_log.py               # In-session event log panel
     dialogs.py                   # Save/discard session dialog
-    alert_system.py              # Alert sound / notification helper
+    alert_system.py              # Taskbar flash / beep / desktop notification on alert
   storage/
     database.py                  # SQLite read/write for session event log
 benchmark.py                     # Standalone pipeline performance benchmark
@@ -74,9 +74,9 @@ benchmark.py                     # Standalone pipeline performance benchmark
 
 - `BITMIND_API_KEY` — loaded from `.env` file (never hardcode)
 - `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → DEEPFAKE; below → REAL
-- `EMA_ALPHA = 0.3` — smoothing factor for display score
-- `ALERT_TRIGGER_FRAMES = 2` — consecutive DEEPFAKE frames to trigger alert
-- `ALERT_DISMISS_FRAMES = 5` — consecutive non-DEEPFAKE frames to auto-dismiss
+- `DETECTION_TILE_GRID = 2` — N x N overlapping tiles for small-face detection (1 disables)
+- `ALERT_TRIGGER_FRAMES = 3` — consecutive DEEPFAKE frames to trigger alert
+- `ALERT_DISMISS_FRAMES = 8` — consecutive non-DEEPFAKE frames to auto-dismiss
 
 ## API Setup
 

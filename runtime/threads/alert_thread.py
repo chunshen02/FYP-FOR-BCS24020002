@@ -12,7 +12,6 @@ import os
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
-from runtime.detection.inference import FaceResult
 
 
 class AlertThread(QThread):
@@ -42,7 +41,6 @@ class AlertThread(QThread):
         Called from the GUI thread via signal connection.
         Non-blocking: drops frames if queue is full.
         """
-        _ = FaceResult  # keeps explicit type intent without runtime dependency use
         try:
             self._queue.put_nowait(results)
         except queue.Full:

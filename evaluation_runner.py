@@ -103,10 +103,7 @@ def _classify_sample(frame, detector: FaceDetector, preprocessor: Preprocessor,
     Returns:
         (FaceResult, faces_detected: int). Raises BitmindAPIError on failure.
     """
-    h, w = frame.shape[:2]
-    scale = config.DETECTION_UPSCALE
-    scaled = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
-    face_crops = detector.detect(scaled)
+    face_crops = detector.detect(frame)
 
     crops = [crop for crop, _ in face_crops] if face_crops else [frame]
     best_result = None

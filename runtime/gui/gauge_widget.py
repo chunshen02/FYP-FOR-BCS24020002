@@ -44,7 +44,10 @@ class GaugeWidget(QWidget):
 
     def set_value(self, value: float, label: str):
         """Update the gauge reading (0-100) and the status label beneath it."""
-        self._value = max(0.0, min(100.0, value))
+        value = max(0.0, min(100.0, value))
+        if (value, label) == (self._value, self._label):
+            return  # called every frame; skip the repaint when the reading is unchanged
+        self._value = value
         self._label = label
         self.update()
 

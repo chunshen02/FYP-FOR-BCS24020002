@@ -170,8 +170,8 @@ class DetectionWorker(QThread):
     Signals:
         frame_ready(np.ndarray, list, list, list): BGR frame, list of FaceResult
             (locked — classified once, awaiting manual re-check to run again),
-            list of pending bboxes (never yet classified), list of rechecking
-            bboxes (previously classified, a fresh classification is in flight).
+            list of pending bboxes (never yet classified), list of FaceResult
+            being re-checked (previous verdict, a fresh classification is in flight).
         fps_update(float): Current processing FPS.
         api_response_update(float): Most recent BitMind API response time (ms).
         error_occurred(str): Error message if the pipeline crashes.
@@ -191,7 +191,7 @@ class DetectionWorker(QThread):
         self._running = False
         # Shared state between main loop and API thread
         self._pending_lock = threading.Lock()
-        self._pending_faces: dict = {}   # face_id -> (jpeg_bytes, bbox, resized_bgr)
+        self._pending_faces: dict = {}   # face_id -> (crop_bgr, bbox)
         self._result_lock = threading.Lock()
         self._cached_results: dict = {}  # face_id -> FaceResult
         # A face with a result is "locked" — excluded from auto re-submission
@@ -219,7 +219,6 @@ class DetectionWorker(QThread):
         self._inflight_id = None
 
         capture = ScreenCapture(region=self._region)
-        preprocessor = Preprocessor()
         tracker = _FaceTracker()
 
         owned_detector = self._shared_detector is None
@@ -248,6 +247,8 @@ class DetectionWorker(QThread):
 
         frame_count = 0
         fps_timer_start = time.perf_counter()
+        last_low_light = None
+        last_face_counts = None
 
         try:
             while self._running:
@@ -264,8 +265,10 @@ class DetectionWorker(QThread):
 
                 # Emit low-light warning based on a cheap downsampled brightness check.
                 thumb = cv2.resize(display_frame, (64, 36))
-                gray_mean = float(cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY).mean())
-                self.low_light_warning.emit(gray_mean < config.LOW_LIGHT_THRESHOLD)
+                is_low_light = float(cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY).mean()) < config.LOW_LIGHT_THRESHOLD
+                if is_low_light != last_low_light:
+                    self.low_light_warning.emit(is_low_light)
+                    last_low_light = is_low_light
 
                 with self._focus_lock:
                     focus_rect = self._focus_rect
@@ -282,34 +285,10 @@ class DetectionWorker(QThread):
                 else:
                     fox, foy = 0, 0
 
-                scale = config.DETECTION_UPSCALE
-                if scale != 1.0:
-                    h, w = detection_frame.shape[:2]
-                    scaled_frame = cv2.resize(
-                        detection_frame,
-                        (int(w * scale), int(h * scale)),
-                        interpolation=cv2.INTER_CUBIC,
-                    )
-                    raw_crops = detector.detect(scaled_frame)
-                    face_crops = [
-                        (crop, {
-                            "x": int(b["x"] / scale) + fox,
-                            "y": int(b["y"] / scale) + foy,
-                            "w": int(b["w"] / scale),
-                            "h": int(b["h"] / scale),
-                        })
-                        for crop, b in raw_crops
-                    ]
-                else:
-                    face_crops = [
-                        (crop, {
-                            "x": b["x"] + fox,
-                            "y": b["y"] + foy,
-                            "w": b["w"],
-                            "h": b["h"],
-                        })
-                        for crop, b in detector.detect(detection_frame)
-                    ]
+                face_crops = [
+                    (crop, {"x": b["x"] + fox, "y": b["y"] + foy, "w": b["w"], "h": b["h"]})
+                    for crop, b in detector.detect(detection_frame)
+                ]
 
                 with self._excl_lock:
                     excl = self._excl_rect
@@ -321,13 +300,16 @@ class DetectionWorker(QThread):
                                 and ey <= b["y"] + b["h"] // 2 < ey + eh)
                     ]
 
-                # Cap to MAX_FACES largest faces so API load stays bounded.
+                # Cap to the MAX_FACES most confident faces (detect() returns them
+                # in that order) so API load stays bounded. Ranking by box area
+                # instead let one large low-confidence false positive (e.g. on a
+                # dark text area) push a real face out of analysis.
                 total_detected = len(face_crops)
-                if len(face_crops) > config.MAX_FACES:
-                    face_crops = sorted(
-                        face_crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True
-                    )[:config.MAX_FACES]
-                self.face_count_update.emit(len(face_crops), total_detected)
+                face_crops = face_crops[:config.MAX_FACES]
+                face_counts = (len(face_crops), total_detected)
+                if face_counts != last_face_counts:
+                    self.face_count_update.emit(*face_counts)
+                    last_face_counts = face_counts
 
                 bboxes = [b for _, b in face_crops]
                 with self._inflight_lock:
@@ -340,15 +322,12 @@ class DetectionWorker(QThread):
                 keep_ids = alive_ids | protected_ids
 
                 with self._pending_lock:
-                    if face_crops:
-                        for (crop, bbox), fid in zip(face_crops, face_ids):
-                            # Locked faces already have a result — only a
-                            # manual re-check (which clears the lock) makes
-                            # them eligible for another classification cycle.
-                            if fid in self._locked_ids:
-                                continue
-                            jpeg_bytes, resized_bgr = preprocessor.process_with_array(crop)
-                            self._pending_faces[fid] = (jpeg_bytes, bbox, resized_bgr)
+                    for (crop, bbox), fid in zip(face_crops, face_ids):
+                        # Locked faces already have a result — only a
+                        # manual re-check (which clears the lock) makes
+                        # them eligible for another classification cycle.
+                        if fid not in self._locked_ids:
+                            self._pending_faces[fid] = (crop, bbox)
                     self._pending_faces = {
                         k: v for k, v in self._pending_faces.items() if k in keep_ids
                     }
@@ -362,18 +341,19 @@ class DetectionWorker(QThread):
                 with self._result_lock, self._pending_lock:
                     results = []
                     pending_bboxes = []
-                    rechecking_bboxes = []
+                    rechecking_results = []
+                    # Cached results are refreshed to the current bbox so the
+                    # box keeps following the face even though it's locked.
                     for fid, bbox in zip(face_ids, bboxes):
-                        if fid in self._recheck_ids:
-                            rechecking_bboxes.append(bbox)
-                        elif fid in self._cached_results:
-                            # Refresh to the current bbox so the box keeps
-                            # following the face even though it's locked.
-                            results.append(replace(self._cached_results[fid], bbox=bbox))
-                        else:
+                        cached = self._cached_results.get(fid)
+                        if cached is None:
                             pending_bboxes.append(bbox)
+                        elif fid in self._recheck_ids:
+                            rechecking_results.append(replace(cached, bbox=bbox))
+                        else:
+                            results.append(replace(cached, bbox=bbox))
 
-                self.frame_ready.emit(display_frame, results, pending_bboxes, rechecking_bboxes)
+                self.frame_ready.emit(display_frame, results, pending_bboxes, rechecking_results)
 
                 frame_count += 1
                 if frame_count % 30 == 0:
@@ -406,6 +386,7 @@ class DetectionWorker(QThread):
         struggling connection surfaces as Degraded rather than crashing the
         thread or silently corrupting cached results.
         """
+        preprocessor = Preprocessor()
         consecutive_failures = 0
         degraded = False
 
@@ -413,18 +394,20 @@ class DetectionWorker(QThread):
             with self._pending_lock:
                 if self._pending_faces:
                     # Take the next face in insertion order
-                    face_id, (jpeg_bytes, bbox, resized_bgr) = next(
-                        iter(self._pending_faces.items())
-                    )
+                    face_id, (crop, bbox) = next(iter(self._pending_faces.items()))
                     # Move it to the back so other faces get a turn next
                     del self._pending_faces[face_id]
-                    self._pending_faces[face_id] = (jpeg_bytes, bbox, resized_bgr)
+                    self._pending_faces[face_id] = (crop, bbox)
                 else:
                     face_id = None
 
             if face_id is None:
                 time.sleep(0.05)
                 continue
+
+            # Encoded here rather than every frame in the capture loop, since
+            # only the crop actually submitted (≤1 per second) needs it.
+            jpeg_bytes, resized_bgr = preprocessor.process_with_array(crop)
 
             with self._inflight_lock:
                 self._inflight_id = face_id

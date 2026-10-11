@@ -40,6 +40,7 @@ from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
 from runtime.gui.dialogs import SaveSessionDialog
 from runtime.gui.gauge_widget import GaugeWidget
+from runtime.gui.alert_system import notify_alert
 from runtime.capture.window_affinity import (
     apply_capture_exclusion,
     clear_capture_exclusion,
@@ -51,7 +52,9 @@ from runtime.threads.detection_worker import DetectionWorker
 from runtime.threads.alert_thread import AlertThread
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.inference import DeepfakeInferenceEngine
-from runtime.storage.database import log_event as db_log_event, get_all_sessions, delete_session, clear_history
+from runtime.storage.database import (
+    log_event as db_log_event, get_all_sessions, delete_session, delete_events_from, clear_history,
+)
 import config
 
 
@@ -106,6 +109,7 @@ class MainWindow(QMainWindow):
         self._alert_thread: AlertThread = None
         self._session_active = False
         self._session_start_time = None
+        self._session_start_id = None   # DB id of this session's start event, so Discard can delete it
         self._frame_count = 0
         self._current_alert_active = False
         self._alert_count = 0
@@ -115,6 +119,10 @@ class MainWindow(QMainWindow):
         self._capture_affinity_value = None   # WDA_* constant actually applied, for temporary clear/restore
         self._mini_mode = False
         self._full_mode_geometry = None
+        # (face_id, last_updated) of what is currently rendered, so per-frame
+        # updates skip the costly setStyleSheet/QPixmap work when nothing changed.
+        self._analysis_key = None
+        self._mini_strip_key = None
 
         # Shared heavy components — initialised once in background, reused across sessions
         self._shared_detector: FaceDetector = None
@@ -592,6 +600,7 @@ class MainWindow(QMainWindow):
         the Confidence Score gauge so both always reflect the same result.
         """
         if result is None:
+            self._analysis_key = None
             self._analysis_empty_label.setVisible(True)
             self._analysis_verdict_badge.setVisible(False)
             self._analysis_pct_label.setVisible(False)
@@ -600,6 +609,15 @@ class MainWindow(QMainWindow):
                 bullet_icon.setVisible(False)
                 bullet_text.setVisible(False)
             return
+
+        elapsed = time.perf_counter() - result.last_updated
+        age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
+        self._analysis_time_label.setText(age_str)
+
+        key = (result.face_id, result.last_updated)
+        if key == self._analysis_key:
+            return
+        self._analysis_key = key
 
         self._analysis_empty_label.setVisible(False)
         self._analysis_verdict_badge.setVisible(True)
@@ -614,10 +632,6 @@ class MainWindow(QMainWindow):
             f"font-weight: bold; border-radius: 9px;"
         )
         self._analysis_pct_label.setText(f"{result.p_fake_raw * 100:.1f}%")
-
-        elapsed = time.perf_counter() - result.last_updated
-        age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
-        self._analysis_time_label.setText(age_str)
 
         reasons = result.explanation or [
             "No local visual artifacts detected by heuristic analysis — "
@@ -978,16 +992,18 @@ class MainWindow(QMainWindow):
         self._alert_thread.alert_triggered.connect(self._on_alert_triggered)
         self._alert_thread.alert_dismissed.connect(self._on_alert_dismissed)
 
-        # Wire detection results to alert thread
+        # Wire detection results to alert thread. A face being manually
+        # re-checked keeps its previous verdict here, so re-checking a
+        # deepfake doesn't auto-dismiss the alert and then re-raise it.
         self._detection_worker.frame_ready.connect(
-            lambda frame, results, pending, rechecking: self._alert_thread.push_results(results)
+            lambda frame, results, pending, rechecking: self._alert_thread.push_results(results + rechecking)
         )
 
         self._alert_thread.start()
         self._detection_worker.start()
 
         self._session_log_event("SESSION", "Detection started.")
-        db_log_event("SESSION", "Detection started.")
+        self._session_start_id = db_log_event("SESSION", "Detection started.")
 
         # Nudge the window to a screen edge so it's less likely to default
         # to a position that overlaps the meeting window. This app doesn't
@@ -1044,7 +1060,10 @@ class MainWindow(QMainWindow):
                 self._session_log_event("SESSION", "Detection stopped.")
                 db_log_event("SESSION", "Detection stopped.")
                 self.refresh_history()
-            # Discard: skip writing the stop event so the session is not surfaced
+            elif self._session_start_id is not None:
+                # Discard: delete everything logged since the start event, so
+                # no orphaned start or CLASSIFICATION rows are left behind.
+                delete_events_from(self._session_start_id)
 
         # Return UI to Idle state and reset stats readouts
         self._set_status("Idle")
@@ -1097,7 +1116,7 @@ class MainWindow(QMainWindow):
     # -- Frame & Result Handling -----------------------------------------------
 
     @pyqtSlot(object, object, object, object)
-    def _on_frame_ready(self, frame: np.ndarray, results: list, pending_bboxes: list, rechecking_bboxes: list):
+    def _on_frame_ready(self, frame: np.ndarray, results: list, pending_bboxes: list, rechecking_results: list):
         """Handle incoming frame and detection results."""
         self._frame_count += 1
         self._frames_value.setText(f"{self._frame_count:,}")
@@ -1106,16 +1125,18 @@ class MainWindow(QMainWindow):
         if self._status_state == "Initializing":
             self._set_status("Detecting")
 
-        # Update confidence + analysis based on worst result
-        if results:
-            worst = max(results, key=lambda r: r.p_fake_raw)
+        # A face being re-checked still has its previous verdict, which stays
+        # the latest known one until the fresh result lands.
+        verdicts = results + rechecking_results
+
+        # Update confidence + analysis based on worst result. Alerts are
+        # raised only by AlertThread, so its debounce and Acknowledge hold.
+        if verdicts:
+            worst = max(verdicts, key=lambda r: r.p_fake_raw)
             # Use raw score for accuracy — real-time API response
             display_confidence = worst.p_fake_raw * 100
             self._gauge.set_value(display_confidence, worst.risk_level.title())
             self._update_detection_analysis(worst)
-
-            if worst.p_fake_raw >= config.FAKE_THRESHOLD and not self._current_alert_active:
-                self._show_alert()
         else:
             self._gauge.set_value(0, "—")
             self._update_detection_analysis(None)
@@ -1124,18 +1145,23 @@ class MainWindow(QMainWindow):
         # actually show them — full mode already shows faces via the live
         # video overlay, so this would be wasted work there.
         if self._mini_mode:
-            self._update_mini_face_strip(results)
+            self._update_mini_face_strip(verdicts)
 
     def _update_mini_face_strip(self, results: list):
         """Update Mini mode's live face thumbnails, ranked by confidence (most suspicious first)."""
-        if not results:
+        ranked = sorted(results, key=lambda r: r.p_fake_raw, reverse=True)[:len(self._mini_thumbnails)]
+        key = [(r.face_id, r.last_updated) for r in ranked]
+        if key == self._mini_strip_key:
+            return
+        self._mini_strip_key = key
+
+        if not ranked:
             self._mini_faces_empty_label.setVisible(True)
             for thumb in self._mini_thumbnails:
                 thumb.clear()
             return
 
         self._mini_faces_empty_label.setVisible(False)
-        ranked = sorted(results, key=lambda r: r.p_fake_raw, reverse=True)
         for i, thumb in enumerate(self._mini_thumbnails):
             if i < len(ranked) and ranked[i].thumbnail is not None:
                 thumb.set_face(ranked[i].thumbnail, ranked[i].risk_level, ranked[i].p_fake_raw)
@@ -1184,14 +1210,17 @@ class MainWindow(QMainWindow):
     @pyqtSlot(float, list)
     def _on_alert_triggered(self, peak_p_fake: float, explanation: list):
         """
-        Handle alert trigger from alert thread.
+        Handle alert trigger from alert thread — the single source of alerts.
 
         The log only records a one-line summary — the full reasoning
         (`explanation`) is surfaced continuously in the Detection Analysis
         card via _on_frame_ready, not duplicated into the log here.
         """
-        if not self._current_alert_active:
-            self._show_alert()
+        self._alert_count += 1
+        self._alert_card.setVisible(True)
+        self._current_alert_active = True
+        self._set_status("Alert")
+        notify_alert(self, peak_p_fake)
         detail = f"Deepfake detected — Peak confidence: {peak_p_fake:.1%}"
         self._session_log_event("ALERT", detail)
         db_log_event("ALERT", detail, peak_confidence=peak_p_fake)
@@ -1199,6 +1228,8 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_alert_dismissed(self):
         """Handle alert dismissal from alert thread."""
+        if not self._current_alert_active:
+            return  # already acknowledged by the user — nothing left to dismiss
         self._alert_card.setVisible(False)
         self._current_alert_active = False
         if self._session_active and not self._degraded:
@@ -1212,14 +1243,6 @@ class MainWindow(QMainWindow):
         self._session_log_event("ERROR", error_msg)
         db_log_event("ERROR", error_msg)
         self._on_stop()
-
-    def _show_alert(self):
-        """Show alert card and reflect the Alert state. Reasoning lives in the Detection Analysis card."""
-        if not self._current_alert_active:
-            self._alert_count += 1
-        self._alert_card.setVisible(True)
-        self._current_alert_active = True
-        self._set_status("Alert")
 
     def _tick_session_duration(self):
         """Update session duration every second."""

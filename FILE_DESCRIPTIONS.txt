@@ -18,7 +18,8 @@ used across the entire project. This includes:
   - File paths (database location)
   - BitMind API endpoint URL and timeout settings
   - Rate limit delay between API requests
-  - MediaPipe face detection confidence threshold
+  - MediaPipe face detection confidence threshold and tiled
+    detection settings (grid size, tile overlap, duplicate merging)
   - Bounding box expansion ratio and alignment angle threshold
   - Face crop size and JPEG quality for API submission
   - Fake threshold (FAKE_THRESHOLD) for the binary REAL/DEEPFAKE
@@ -48,10 +49,13 @@ Performs face detection and alignment on BGR frames using the
 MediaPipe BlazeFace Tasks API. On first run it downloads the
 BlazeFace short-range TFLite model. The FaceDetector class applies
 CLAHE contrast enhancement (on a copy of the frame, for detection
-only) to improve accuracy in low light, detects all faces, expands
-each bounding box by a configurable ratio, optionally applies
-affine rotation alignment if the face tilt exceeds a threshold,
-and returns a list of (crop, bbox) tuples. The bbox dictionary
+only) when the frame is dark, runs BlazeFace on the full frame plus
+a grid of overlapping tiles (so small faces, e.g. in a meeting's
+gallery view, are not lost to the model's 128x128 input), merges
+duplicate detections across tiles, expands each bounding box by a
+configurable ratio, rotates the face upright about its own centre
+if its tilt exceeds a threshold, and returns a list of (crop, bbox)
+tuples. The bbox dictionary
 contains pixel coordinates used by the overlay renderer and
 inference engine.
 
@@ -114,19 +118,21 @@ continuously in the background. Architecture:
 
   - Main loop (~15 FPS): captures a screen frame, masks the app's
     own window region for display, optionally crops to a
-    user-selected detection zone, upscales for small-face
-    detection, runs face detection, assigns stable IDs via
-    _FaceTracker, prepares JPEG crops, emits annotated frames,
+    user-selected detection zone, runs face detection, assigns
+    stable IDs via _FaceTracker, queues crops of faces that need
+    (re-)classification, emits annotated frames,
     FaceResult lists, and pending bboxes to the GUI thread via
     Qt signals. Also emits a low-light warning based on a cheap
     downsampled brightness check and the count of shown vs. total
     detected faces.
 
-  - API daemon thread: round-robins through all currently
-    visible faces, calling the BitMind API once per face per
-    cycle (rate limit is enforced inside DeepfakeInferenceEngine),
-    running the local explainer on DEEPFAKE results. Results are
-    cached and shared back to the main loop via a thread-safe lock.
+  - API daemon thread: round-robins through all queued faces,
+    JPEG-encoding each crop and calling the BitMind API once per
+    face per cycle (rate limit is enforced inside
+    DeepfakeInferenceEngine), running the local explainer on
+    DEEPFAKE results. Results are cached and shared back to the
+    main loop via a thread-safe lock. A classified face is locked
+    until the user requests a manual re-check.
 
   - _FaceTracker: assigns stable string IDs to faces across
     frames using bounding box centre proximity, ensuring that
@@ -252,19 +258,21 @@ presses Stop. It displays the session duration, number of alerts
 triggered, and a colour-coded result badge ("Deepfake detected"
 in red or "Clean" in green). The user can click Save (accepted)
 to persist the session to the database, or Discard (rejected)
-to drop it. The dialog result is checked in MainWindow._on_stop()
-to decide whether to write the stop event to the database.
+to drop it. The dialog result is checked in MainWindow._on_stop():
+Save writes the stop event, Discard deletes every event logged
+since the session's start event.
 
 ----------------------------------------------------------------
 16. runtime/gui/alert_system.py
 ----------------------------------------------------------------
-Provides the AlertOverlay helper class, which applies a red
-border stylesheet to a target widget when an alert fires and
-removes it when the alert is dismissed. It also sends a Windows
-desktop toast notification via the plyer library, showing the
-peak P_fake confidence score. Toast delivery is wrapped in a
-try/except so that a missing or unavailable notification backend
-never crashes the application.
+Provides notify_alert(), called when an alert fires so it is
+noticed even while the meeting window has focus: it flashes the
+app's taskbar entry, plays the system beep, and sends a desktop
+toast notification via the plyer library showing the peak P_fake
+confidence score. The toast runs on a daemon thread because
+plyer's Windows backend blocks for the notification's duration,
+and is wrapped in a try/except so that an unavailable
+notification backend never crashes the application.
 
 ----------------------------------------------------------------
 17. runtime/gui/window_affinity.py
@@ -308,9 +316,9 @@ functions:
 ----------------------------------------------------------------
 Standalone script for measuring end-to-end pipeline performance.
 It mirrors DetectionWorker's architecture: the main loop (screen
-capture, upscaled face detection, tracking, JPEG preprocessing)
-runs at DISPLAY_FPS, while BitMind API calls run round-robin on a
-separate thread, so API latency never counts against frame
+capture, tiled face detection, tracking) runs at DISPLAY_FPS,
+while JPEG preprocessing and BitMind API calls run round-robin on
+a separate thread, so API latency never counts against frame
 FPS/latency. It runs BENCHMARK_REPEAT passes, each consisting of a
 warmup phase followed by a measurement phase. Per pass it records:
   - Main-loop frame latency (ms)

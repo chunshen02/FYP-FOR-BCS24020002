@@ -89,6 +89,52 @@ def test_delete_session_removes_only_that_session():
     assert not any(e["event_type"] == "ALERT" for e in database.get_session_history())
 
 
+def test_orphaned_start_does_not_claim_next_session_stop():
+    _insert("2026-05-06 08:00:00", "SESSION", "Detection started.")
+    _insert("2026-05-06 08:01:00", "ALERT", "Deepfake alert")
+    _insert_two_sessions()
+    assert [s["started_at"] for s in database.get_all_sessions()] == [
+        "2026-05-06 10:00:00", "2026-05-06 09:00:00",
+    ]
+
+
+def test_delete_session_of_orphaned_start_keeps_next_session():
+    _insert("2026-05-06 08:00:00", "SESSION", "Detection started.")
+    _insert_two_sessions()
+    database.delete_session("2026-05-06 08:00:00")
+    assert len(database.get_all_sessions()) == 2
+
+
+def test_log_event_returns_row_id():
+    first = database.log_event("INFO", "one")
+    second = database.log_event("INFO", "two")
+    assert second == first + 1
+
+
+def test_delete_events_from_discards_session():
+    _insert_two_sessions()
+    start_id = database.log_event("SESSION", "Detection started.")
+    database.log_event("CLASSIFICATION", "face=f0 risk=DEEPFAKE trigger=auto", peak_confidence=0.9)
+    database.log_event("ALERT", "Deepfake alert")
+    database.delete_events_from(start_id)
+    # Only the 6 rows of the two saved sessions remain.
+    assert len(database.get_session_history()) == 6
+    assert len(database.get_all_sessions()) == 2
+
+
+def test_long_session_survives_many_classification_rows():
+    _insert("2026-05-06 09:00:00", "SESSION", "Detection started.")
+    conn = database._get_connection()
+    conn.executemany(
+        "INSERT INTO session_events (timestamp, event_type, detail) VALUES (?, ?, ?)",
+        [("2026-05-06 09:30:00", "CLASSIFICATION", "face=f0 risk=REAL trigger=auto")] * 2000,
+    )
+    conn.commit()
+    conn.close()
+    _insert("2026-05-06 11:00:00", "SESSION", "Detection stopped.")
+    assert [s["started_at"] for s in database.get_all_sessions()] == ["2026-05-06 09:00:00"]
+
+
 def test_clear_history_removes_everything():
     _insert_two_sessions()
     database.clear_history()

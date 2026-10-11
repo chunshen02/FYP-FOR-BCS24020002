@@ -3,7 +3,7 @@ benchmark.py
 
 Measures end-to-end real-time detection pipeline performance.
 Mirrors DetectionWorker's architecture: the main loop (capture → face detection
-→ tracking → JPEG preprocessing) runs at DISPLAY_FPS while BitMind API calls
+→ tracking) runs at DISPLAY_FPS while JPEG preprocessing and BitMind API calls
 run on a separate thread, so API latency is reported on its own and never
 counted against frame FPS/latency. Handles the case where the API key is not
 configured.
@@ -16,7 +16,6 @@ import threading
 import time
 import os
 import sys
-import cv2
 import numpy as np
 import psutil
 
@@ -34,20 +33,23 @@ _FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
 
 def _api_loop(engine, pending: dict, pending_lock: threading.Lock,
               stop: threading.Event, measuring: threading.Event, stats: dict):
-    """Round-robin pending faces through the API, as DetectionWorker._api_loop does."""
+    """Round-robin pending faces through the API, JPEG-encoding each on submit, as DetectionWorker._api_loop does."""
+    preprocessor = Preprocessor()
     while not stop.is_set():
         with pending_lock:
             if pending:
-                face_id, (jpeg_bytes, bbox) = next(iter(pending.items()))
+                face_id, (crop, bbox) = next(iter(pending.items()))
                 # Move it to the back so other faces get a turn next
                 del pending[face_id]
-                pending[face_id] = (jpeg_bytes, bbox)
+                pending[face_id] = (crop, bbox)
             else:
                 face_id = None
 
         if face_id is None:
             time.sleep(0.05)
             continue
+
+        jpeg_bytes = preprocessor.process(crop)
 
         # Unlike the live app, faces are never locked after their first result,
         # so the API thread stays saturated at the rate limit for the whole run —
@@ -63,18 +65,8 @@ def _api_loop(engine, pending: dict, pending_lock: threading.Lock,
 
 
 def _detect_faces(detector: FaceDetector, frame: np.ndarray) -> list:
-    """Upscale, detect, and keep the MAX_FACES largest faces, as DetectionWorker does."""
-    scale = config.DETECTION_UPSCALE
-    if scale != 1.0:
-        h, w = frame.shape[:2]
-        scaled = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
-        face_crops = [
-            (crop, {k: int(v / scale) for k, v in b.items()})
-            for crop, b in detector.detect(scaled)
-        ]
-    else:
-        face_crops = detector.detect(frame)
-    return sorted(face_crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True)[:config.MAX_FACES]
+    """Detect and keep the MAX_FACES most confident faces, as DetectionWorker does."""
+    return detector.detect(frame)[:config.MAX_FACES]
 
 
 def run_benchmark_pass(pass_number: int) -> dict:
@@ -82,10 +74,9 @@ def run_benchmark_pass(pass_number: int) -> dict:
 
     capture = ScreenCapture()
     detector = FaceDetector()
-    preprocessor = Preprocessor()
     tracker = _FaceTracker()
 
-    pending: dict = {}   # face_id -> (jpeg_bytes, bbox)
+    pending: dict = {}   # face_id -> (crop_bgr, bbox)
     pending_lock = threading.Lock()
     stop = threading.Event()
     measuring = threading.Event()
@@ -142,11 +133,10 @@ def run_benchmark_pass(pass_number: int) -> dict:
             frame = capture.read()
             face_crops = _detect_faces(detector, frame)
             face_ids = tracker.update([b for _, b in face_crops])
-            jpegs = [preprocessor.process(crop) for crop, _ in face_crops]
             alive_ids = tracker.alive_ids()
             with pending_lock:
-                for fid, jpeg_bytes, (_, bbox) in zip(face_ids, jpegs, face_crops):
-                    pending[fid] = (jpeg_bytes, bbox)
+                for fid, (crop, bbox) in zip(face_ids, face_crops):
+                    pending[fid] = (crop, bbox)
                 for fid in [k for k in pending if k not in alive_ids]:
                     del pending[fid]
 

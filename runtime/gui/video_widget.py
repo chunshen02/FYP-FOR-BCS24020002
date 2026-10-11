@@ -91,8 +91,6 @@ class VideoWidget(QWidget):
         self._frame_size = (0, 0)
         self._display_size = (0, 0)
         self._offset = (0, 0)
-        self._cached_scaled_pixmap = None
-        self._cached_widget_size = None
 
         self._blink_on = True
         self._blink_timer = QTimer(self)
@@ -105,28 +103,30 @@ class VideoWidget(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     @pyqtSlot(object, object, object, object)
-    def update_frame(self, frame: np.ndarray, results: list, pending_bboxes: list = None,
-                      rechecking_bboxes: list = None):
+    def update_frame(self, frame: np.ndarray, results: list, pending_bboxes: list,
+                      rechecking_results: list):
         """Update the displayed frame, analyzed results, and pending/rechecking placeholders."""
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
+        # Hidden in Mini mode — skip the per-frame resize and QPixmap conversion.
+        if not self.isVisible():
+            return
+        h, w = frame.shape[:2]
         self._frame_size = (w, h)
 
-        bytes_per_line = ch * w
-        qt_image = QImage(
-            rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
-        )
+        # Downscaling once here with OpenCV is far cheaper than converting the
+        # full-resolution frame and smooth-scaling it in Qt on every paint.
+        scale = min(self.width() / w, self.height() / h)
+        display_w, display_h = max(1, int(w * scale)), max(1, int(h * scale))
+        display = cv2.resize(frame, (display_w, display_h), interpolation=cv2.INTER_AREA)
+        qt_image = QImage(display.data, display_w, display_h, 3 * display_w, QImage.Format.Format_BGR888)
         self._current_pixmap = QPixmap.fromImage(qt_image)
-        self._cached_scaled_pixmap = None  # invalidate on new frame
         self._current_results = results
-        self._current_pending_bboxes = pending_bboxes or []
-        self._current_rechecking_bboxes = rechecking_bboxes or []
+        self._current_pending_bboxes = pending_bboxes
+        self._current_rechecking_bboxes = [r.bbox for r in rechecking_results]
         self.update()
 
     def clear(self):
         """Clear the displayed frame."""
         self._current_pixmap = None
-        self._cached_scaled_pixmap = None
         self._current_results = []
         self._current_pending_bboxes = []
         self._current_rechecking_bboxes = []
@@ -239,23 +239,15 @@ class VideoWidget(QWidget):
             painter.end()
             return
 
-        widget_size = self.size()
-        current_w_size = (widget_size.width(), widget_size.height())
-        if self._cached_scaled_pixmap is None or self._cached_widget_size != current_w_size:
-            self._cached_scaled_pixmap = self._current_pixmap.scaled(
-                widget_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._cached_widget_size = current_w_size
-        scaled_pixmap = self._cached_scaled_pixmap
-
-        x_offset = (widget_size.width() - scaled_pixmap.width()) // 2
-        y_offset = (widget_size.height() - scaled_pixmap.height()) // 2
-        self._display_size = (scaled_pixmap.width(), scaled_pixmap.height())
+        # The pixmap is already display-sized by update_frame; after a widget
+        # resize it catches up on the next frame (~66 ms at DISPLAY_FPS=15).
+        pixmap = self._current_pixmap
+        x_offset = (self.width() - pixmap.width()) // 2
+        y_offset = (self.height() - pixmap.height()) // 2
+        self._display_size = (pixmap.width(), pixmap.height())
         self._offset = (x_offset, y_offset)
 
-        painter.drawPixmap(x_offset, y_offset, scaled_pixmap)
+        painter.drawPixmap(x_offset, y_offset, pixmap)
         self._draw_overlays(painter)
         self._draw_selection_zone(painter)
         self._draw_live_indicator(painter)

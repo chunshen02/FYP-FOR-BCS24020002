@@ -38,12 +38,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+# Keyed by path rather than a single flag because tests repoint config.DB_PATH per test.
+_schema_ready: set = set()
+
+
 def _get_connection() -> sqlite3.Connection:
+    if config.DB_PATH in _schema_ready:
+        return sqlite3.connect(config.DB_PATH)
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     conn = sqlite3.connect(config.DB_PATH)
     conn.execute(CREATE_TABLE_SQL)
     conn.commit()
     _ensure_schema(conn)
+    _schema_ready.add(config.DB_PATH)
     return conn
 
 
@@ -56,7 +63,7 @@ def log_event(
     api_response_ms: float = None,
     api_request_id: str = None,
     ground_truth_label: str = None,
-) -> None:
+) -> int | None:
     """
     Insert a session event record into the local SQLite database.
 
@@ -70,6 +77,9 @@ def log_event(
         api_request_id:      BitMind API request identifier (optional).
         ground_truth_label:  'REAL' or 'DEEPFAKE' — only populated during offline
                               evaluation runs (see evaluation_runner.py), never for live sessions.
+
+    Returns:
+        The new row's id, or None if the write failed.
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sql = """
@@ -80,15 +90,17 @@ def log_event(
     """
     try:
         conn = _get_connection()
-        conn.execute(sql, (
+        cursor = conn.execute(sql, (
             timestamp, event_type, detail,
             peak_confidence, breach_duration_sec, faces_detected,
             api_response_ms, api_request_id, ground_truth_label
         ))
         conn.commit()
         conn.close()
+        return cursor.lastrowid
     except sqlite3.Error as e:
         print(f"[WARNING] Database write failed: {e}")
+        return None
 
 
 def get_session_history(limit: int = 100) -> list:
@@ -136,11 +148,17 @@ def _find_session_id_range(conn: sqlite3.Connection, started_at: str) -> tuple |
         return None
     start_id = row[0]
     cursor = conn.execute(
-        "SELECT id FROM session_events WHERE event_type='SESSION' AND detail LIKE '%Detection stopped%' AND id > ? ORDER BY id ASC LIMIT 1",
+        "SELECT id, detail FROM session_events WHERE event_type='SESSION' AND id > ? ORDER BY id ASC LIMIT 1",
         (start_id,)
     )
     row = cursor.fetchone()
-    return start_id, (row[0] if row is not None else None)
+    if row is None:
+        return start_id, None
+    next_id, next_detail = row
+    # A start followed directly by another start was never stopped (the app
+    # crashed, or it predates Discard deleting its events) — it ends just
+    # before the next session rather than claiming that session's stop.
+    return start_id, (next_id if "Detection stopped" in next_detail else next_id - 1)
 
 
 def delete_session(started_at: str) -> None:
@@ -162,6 +180,17 @@ def delete_session(started_at: str) -> None:
         print(f"[WARNING] Database delete failed: {e}")
 
 
+def delete_events_from(event_id: int) -> None:
+    """Delete the event with this id and every later one — used to discard the session it started."""
+    try:
+        conn = _get_connection()
+        conn.execute("DELETE FROM session_events WHERE id >= ?", (event_id,))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"[WARNING] Database delete failed: {e}")
+
+
 def clear_history() -> None:
     """Delete all session event records."""
     try:
@@ -177,7 +206,8 @@ def _reconstruct_sessions(rows: list) -> list:
     """
     Pair SESSION start/stop rows (oldest-first: id ASC) into completed
     sessions with duration and alert count. Sessions with no matching stop
-    event are skipped (still in progress or truncated).
+    event are skipped (still in progress, truncated, or followed by another
+    start before any stop).
 
     Args:
         rows: list of (id, timestamp, event_type, detail) tuples, oldest-first.
@@ -200,6 +230,8 @@ def _reconstruct_sessions(rows: list) -> list:
             stop_idx = None
             for j in range(i + 1, len(rows)):
                 evt_id, ts, evt_type, evt_detail = rows[j]
+                if evt_type == "SESSION" and evt_detail and "Detection started" in evt_detail:
+                    break  # never stopped — must not claim the next session's stop
                 if evt_type == "SESSION" and evt_detail and "Detection stopped" in evt_detail:
                     stop_idx = j
                     break
@@ -255,9 +287,13 @@ def get_all_sessions(limit: int = 100) -> list:
         List of dicts with keys: started_at, duration, alert_count, result.
         Sorted by most recent first.
     """
+    # Only SESSION/ALERT rows matter for reconstruction; without this filter a
+    # long session's CLASSIFICATION rows would push its start row out of the
+    # LIMIT window and the session would vanish from history.
     sql = """
         SELECT id, timestamp, event_type, detail
         FROM session_events
+        WHERE event_type IN ('SESSION', 'ALERT')
         ORDER BY id DESC
         LIMIT ?
     """

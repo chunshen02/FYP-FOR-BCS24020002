@@ -1,6 +1,7 @@
 ================================================================
   DEEPFAKE DETECTOR — PERFORMANCE RESULTS
   Test Date : 2026-05-23
+  Updated   : 2026-10-11 (Table 7 — post-optimisation benchmark)
   Hardware  : Windows 11 (x64), local desktop machine
   Python    : 3.13.1  |  Benchmark Passes : 3
 ================================================================
@@ -577,6 +578,128 @@ FaceForensics++ C23 benchmark.
 
 
 ================================================================
+  TABLE 7 — DISPLAY PIPELINE PERFORMANCE AFTER OPTIMISATION
+================================================================
+
+Description
+-----------
+Table 7 re-measures the local display pipeline after a round of
+pipeline optimisations (listed below) and compares it with the
+pre-optimisation code, measured on the same screen, in the same
+session and under identical conditions. A same-screen comparison
+is needed because Table 1 was recorded with an earlier version of
+benchmark.py that did not cap the main loop at DISPLAY_FPS (hence
+its 19.5 fps in pass 1), so its figures cannot be compared
+directly with the current, capped benchmark.
+
+Both runs used benchmark.py with the BitMind API key withheld, as
+in Table 1, so no HTTP requests were made and the figures reflect
+local computation only. Each run consisted of three passes of a
+30-second warm-up followed by 60 seconds of measurement. Throughout
+both runs, an always-on-top window showing four face crops from
+test_samples/ (two real, two deepfake) was kept on screen; all
+four were detected, so the face-detection, tracking and cropping
+paths were exercised on every frame. The pre-optimisation code was
+taken unchanged from git commit 1306144.
+
+  Test Date  : 2026-10-11
+  Display    : 2560 × 1600, Windows 11 (x64), 150% scaling
+  On screen  : 4 faces (MAX_FACES = 3 analysed); dark desktop theme
+               (mean brightness 32/255), so the low-light CLAHE path
+               was active in both versions
+  Main loop  : capped at DISPLAY_FPS = 15 (66.7 ms per frame)
+
+
+  7A — AFTER OPTIMISATION (current code)
+  ────────────────────────────────────────────────
+  Pass   FPS      Latency (ms)   CPU (%)   RAM (MB)
+  ────────────────────────────────────────────────
+    1    14.9        51.9          11.1       182
+    2    14.9        52.2          11.3       184
+    3    14.9        52.9          13.2       184
+  ────────────────────────────────────────────────
+  Mean   14.9        52.3          11.9       184 (peak)
+
+
+  7B — BEFORE OPTIMISATION (commit 1306144, same screen)
+  ────────────────────────────────────────────────
+  Pass   FPS      Latency (ms)   CPU (%)   RAM (MB)
+  ────────────────────────────────────────────────
+    1     7.1       141.4          30.2       237
+    2     6.9       145.1          33.5       238
+    3     6.8       147.6          32.1       234
+  ────────────────────────────────────────────────
+  Mean    6.9       144.7          32.0       238 (peak)
+
+
+  7C — COMPARISON AGAINST TARGETS
+  ──────────────────────────────────────────────────────────────────
+  Metric                Target      Before          After      Change
+  ──────────────────────────────────────────────────────────────────
+  Mean FPS              >=10        6.9  FAIL      14.9  PASS   +116%
+  Lowest FPS Observed   >=10        6.5  FAIL      14.5  PASS   +123%
+  Mean Frame Latency    <=100 ms  144.7  FAIL      52.3  PASS    -64%
+  Mean CPU              <=70 %     32.0  PASS      11.9  PASS    -63%
+  Peak RAM              <=800 MB    238  PASS       184  PASS    -23%
+  ──────────────────────────────────────────────────────────────────
+
+Optimisations responsible
+-------------------------
+  1. Removed the 2× bicubic upscale applied before face detection.
+     BlazeFace resizes every input to 128 × 128, so upscaling did
+     not change what the model saw: on synthetic test frames it
+     detected exactly the same faces with and without the upscale,
+     while the upscale cost 50–90 ms per frame.
+  2. Face detection now runs on a copy of the frame downscaled to
+     at most 1280 px wide (the crops sent to the API are still cut
+     from the full-resolution frame), and CLAHE contrast enhancement
+     runs only when the frame is dark.
+  3. Screen capture now converts mss's BGRA output with a single
+     cvtColor call (~1.6 ms) instead of slicing off the alpha
+     channel. The slice itself was free, but it produced a
+     non-contiguous array that made every later OpenCV call copy
+     the whole frame first (~15 ms per call at 2560 × 1600).
+  4. JPEG encoding of face crops moved from the per-frame loop to
+     the API thread, so it runs only for the crop actually
+     submitted (at most once per second).
+  5. Detection additionally runs on a 2 × 2 grid of overlapping
+     tiles so that small faces (e.g. in a meeting's gallery view)
+     are found; on a synthetic 1080p 3 × 3 gallery it detects 9 of
+     9 faces versus 4 of 9 before. This adds work to every frame
+     and is included in the "after" figures.
+
+Discussion
+----------
+Before optimisation, the pipeline fails both the frame-rate and
+latency targets on this 2560 × 1600 display, averaging 6.9 fps
+(lowest 6.5 fps) with a mean latency of 144.7 ms. After
+optimisation, all five targets are met with a wide margin, and the
+results are highly consistent across passes: 14.9 fps in every
+pass and latency within 51.9–52.9 ms.
+
+The post-optimisation frame rate of 14.9 fps sits at the
+DISPLAY_FPS = 15 cap. Each frame completes in about 52 ms and the
+loop then sleeps for the rest of its 66.7 ms budget, so the
+pipeline's actual capacity is higher than the reported figure.
+Of the 52 ms, roughly 30–36 ms is the mss screen grab itself
+(Windows GDI capture of 2560 × 1600 pixels), which is now the
+dominant cost; face detection takes about 17 ms. Further gains
+would therefore require a faster capture method or a smaller
+capture region rather than further detection optimisation.
+
+CPU utilisation fell from 32.0% to 11.9% and peak RAM from 238 MB
+to 184 MB, mainly because the pipeline no longer creates and
+processes a 5120 × 3200 upscaled copy of every frame.
+
+The pre-optimisation code reaches only 6.9 fps on this display,
+well below the 16.9 fps recorded in Table 1. Because Table 1 used
+an uncapped benchmark and did not record its display resolution,
+it should not be read as the pre-optimisation baseline for this
+display; Table 7B is. The optimised pipeline meets every target at
+2560 × 1600 even with the low-light path active.
+
+
+================================================================
   SUMMARY
 ================================================================
 
@@ -586,16 +709,19 @@ reporting.
 
 Pipeline Performance
 --------------------
-The local display pipeline (Part A) satisfies all defined
-performance targets under standard operating conditions. A mean
-frame rate of 16.9 fps (target: ≥ 10 fps), mean latency of
-60.8 ms (target: ≤ 100 ms), CPU utilisation of 22.6% (target:
-≤ 70%), and peak RAM consumption of 210 MB (target: ≤ 800 MB)
-confirm that the pipeline is computationally lightweight and
-capable of sustaining real-time operation on a standard desktop
-machine. The minimum observed frame rate across all three passes
-is 12.3 fps, which still exceeds the target, demonstrating
-robustness against transient increases in background system load.
+After the optimisations described in Table 7, the local display
+pipeline (Part A) satisfies all defined performance targets on a
+2560 × 1600 display: a mean frame rate of 14.9 fps (target:
+≥ 10 fps; the loop is capped at 15 fps), mean latency of 52.3 ms
+(target: ≤ 100 ms), CPU utilisation of 11.9% (target: ≤ 70%) and
+peak RAM consumption of 184 MB (target: ≤ 800 MB). The lowest
+observed frame rate across all three passes is 14.5 fps. On the
+same display, the pre-optimisation code reached only 6.9 fps with
+144.7 ms latency, failing both the frame-rate and latency targets;
+the optimisations roughly doubled throughput while cutting latency
+and CPU usage by about two thirds. The earlier Table 1 measurement
+(16.9 fps, 60.8 ms) was taken with a previous, uncapped benchmark
+version and is kept for reference.
 
 API Latency
 -----------
@@ -603,7 +729,7 @@ The BitMind Oracle API free tier adds 1.5 to 2.3 seconds of
 round-trip latency per inference request (mean: 1.77 s). The
 daemon-thread architecture ensures this latency is fully
 decoupled from the display frame rate: the UI continues to render
-at ~17 fps while inference results are delivered asynchronously
+at ~15 fps (Table 7) while inference results are delivered asynchronously
 in the background. At the enforced rate limit of one request per
 second, each detected face receives an updated confidence score
 approximately every 1.8 seconds under normal server load.

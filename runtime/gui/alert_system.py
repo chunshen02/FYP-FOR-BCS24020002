@@ -1,52 +1,31 @@
 """
 alert_system.py
 
-Manages the visual alert overlay and Windows toast notifications.
+Out-of-window alert cues (taskbar flash, beep, desktop notification), so an
+alert is noticed even while the meeting window has focus.
 """
 
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import pyqtSlot
-import sys
-
-try:
-    from plyer import notification as _plyer_notification
-except Exception:
-    _plyer_notification = None
+import threading
+from PyQt6.QtWidgets import QApplication, QWidget
+from plyer import notification
 
 
-class AlertOverlay(QWidget):
-    """
-    Applies a red border overlay to the parent window on alert.
-    """
+def notify_alert(window: QWidget, peak_p_fake: float):
+    """Flash the taskbar entry, beep, and raise a desktop notification for a new alert."""
+    QApplication.alert(window)
+    QApplication.beep()
+    # plyer's Windows backend sleeps for the full notification timeout, so it
+    # must not run on the GUI thread.
+    threading.Thread(target=_send_toast, args=(peak_p_fake,), daemon=True).start()
 
-    ALERT_STYLE = "border: 4px solid red;"
-    NORMAL_STYLE = "border: none;"
 
-    def __init__(self, target_widget):
-        super().__init__()
-        self._target = target_widget
-        _ = sys
-
-    @pyqtSlot(float)
-    def on_alert_triggered(self, peak_p_fake: float):
-        """Show red border and send toast notification."""
-        self._target.setStyleSheet(self.ALERT_STYLE)
-        self._send_toast(peak_p_fake)
-
-    @pyqtSlot()
-    def on_alert_dismissed(self):
-        """Remove red border."""
-        self._target.setStyleSheet(self.NORMAL_STYLE)
-
-    def _send_toast(self, peak_p_fake: float):
-        if _plyer_notification is None:
-            return
-        try:
-            _plyer_notification.notify(
-                title="Deepfake Detected",
-                message=f"Deepfake face detected. Confidence: {peak_p_fake:.1%}",
-                app_name="Deepfake Detector",
-                timeout=5,
-            )
-        except Exception:
-            pass  # Toast is non-critical; silently skip if unavailable
+def _send_toast(peak_p_fake: float):
+    try:
+        notification.notify(
+            title="Deepfake Detected",
+            message=f"Deepfake face detected. Confidence: {peak_p_fake:.1%}",
+            app_name="Deepfake Detector",
+            timeout=5,
+        )
+    except Exception:
+        pass  # Toast is non-critical; the in-app alert card is still shown

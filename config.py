@@ -16,14 +16,22 @@ BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive failures before Degra
 FACE_CONFIDENCE_THRESHOLD = 0.2       # MediaPipe BlazeFace detection confidence
 BBOX_EXPAND_RATIO = 0.20              # Expand bounding box by 20% on all sides
 ALIGNMENT_ANGLE_THRESHOLD = 15        # Degrees; apply affine alignment if exceeded
-DETECTION_UPSCALE = 2.0               # Upscale factor applied to frame before BlazeFace (helps small faces)
-MAX_FACES = 3                         # Analyze at most this many faces per frame (largest first)
-                                       # Faces beyond this limit (smallest-area first) are silently
+# BlazeFace downsamples every input to 128x128, so upscaling the frame never
+# helps small faces — running it on overlapping sub-tiles does (each tile is
+# downsampled less). The full frame is always run too, for faces too large
+# to fit inside a single tile.
+DETECTION_MAX_WIDTH = 1280            # Wider frames are downscaled before detection (cheaper CLAHE/colour conversion;
+                                      # tiles stay far above BlazeFace's 128x128 input, so nothing is lost)
+DETECTION_TILE_GRID = 2              # N x N overlapping tiles per frame; 1 disables tiling
+DETECTION_TILE_OVERLAP = 0.25         # Each tile extends this fraction past its grid cell
+DETECTION_DUPLICATE_OVERLAP = 0.5     # Intersection / smaller-box area above which two detections are one face
+MAX_FACES = 3                         # Analyze at most this many faces per frame (most confident first)
+                                       # Faces beyond this limit (least confident first) are silently
                                        # dropped every tick, before ever reaching the classification
                                        # queue -- not delayed, not queued, not logged. A meeting with
                                        # more than MAX_FACES participants on screen will never have
                                        # the overflow faces analyzed at all for as long as they stay
-                                       # smaller than the top MAX_FACES. Known limitation, not yet
+                                       # less confident than the top MAX_FACES. Known limitation, not yet
                                        # addressed; raising this value or handling overflow more
                                        # gracefully (e.g. rotating which faces are prioritized) is a
                                        # separate future change.
@@ -43,9 +51,6 @@ FACE_CROP_SIZE = 224                  # Resize face crop to this square size bef
 # logged with its raw P_fake score (see database.get_score_distribution) so
 # this can be recalibrated against a larger, more diverse sample in FYP2.
 FAKE_THRESHOLD = 0.70                 # P_fake >= 0.70 → DEEPFAKE; below → REAL
-EMA_ALPHA = 0.2                       # Exponential moving average smoothing factor
-                                      # Smoothed score used for display only.
-                                      # Raw score used for alert triggering.
 
 # ── Alert Rules ────────────────────────────────────────────────────────────────
 ALERT_TRIGGER_FRAMES = 3              # Consecutive RED frames required to trigger alert
