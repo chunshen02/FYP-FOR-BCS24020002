@@ -36,7 +36,6 @@ def _get_rotation_angle(keypoints, img_w: int, img_h: int) -> float:
     return math.degrees(math.atan2(ly - ry, lx - rx))
 
 
-<<<<<<< HEAD
 def _aligned_crop(image: np.ndarray, x_min: int, y_min: int, x_max: int, y_max: int,
                   angle: float) -> np.ndarray:
     """Rotate the face upright about its own centre and return only its bbox region."""
@@ -49,17 +48,6 @@ def _aligned_crop(image: np.ndarray, x_min: int, y_min: int, x_max: int, y_max: 
     return cv2.warpAffine(
         image, mat, (x_max - x_min, y_max - y_min),
         flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE,
-=======
-def _align_face(image: np.ndarray, box: tuple, angle: float) -> np.ndarray:
-    """Rotate the (x_min, y_min, x_max, y_max) face region upright about its own centre and return it."""
-    x_min, y_min, x_max, y_max = box
-    # Rotating about the frame centre instead would carry an off-centre face out of its own box.
-    mat = cv2.getRotationMatrix2D(((x_min + x_max) / 2, (y_min + y_max) / 2), angle, 1.0)
-    # Shift the output origin to the box corner so only the crop region is computed, not the whole frame.
-    mat[:, 2] -= (x_min, y_min)
-    return cv2.warpAffine(
-        image, mat, (x_max - x_min, y_max - y_min), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
     )
 
 
@@ -136,21 +124,13 @@ class FaceDetector:
             frame_bgr: BGR numpy array from screen capture.
 
         Returns:
-<<<<<<< HEAD
             List of (crop, bbox) tuples, one per detected face, most confident first.
-            crop: aligned BGR numpy array; bbox: {"x", "y", "w", "h"} in frame pixels.
-=======
-            List of (crop, bbox) tuples, one per detected face, largest first.
             crop: aligned BGR numpy array cut from frame_bgr at full resolution;
             bbox: {"x", "y", "w", "h"} in frame_bgr pixels.
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
             Returns an empty list if no faces are detected.
         """
         h, w = frame_bgr.shape[:2]
-        scale = min(1.0, config.DETECTION_MAX_WIDTH / w)
-        small = cv2.resize(frame_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA) if scale < 1.0 else frame_bgr
 
-<<<<<<< HEAD
         # Detection runs on a downscaled copy; crops are still taken from the
         # original frame to preserve image fidelity for the API.
         scale = min(1.0, config.DETECTION_MAX_WIDTH / w)
@@ -159,18 +139,6 @@ class FaceDetector:
         else:
             detection_bgr = frame_bgr
         det_h, det_w = detection_bgr.shape[:2]
-=======
-        # CLAHE on the L channel improves face detection in low-light conditions.
-        # Crops are still taken from the original frame to preserve image fidelity for the API.
-        lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
-        l_ch, a_ch, b_ch = cv2.split(lab)
-        detection_bgr = cv2.cvtColor(
-            cv2.merge([self._clahe.apply(l_ch), a_ch, b_ch]), cv2.COLOR_LAB2BGR
-        )
-        rgb_frame = cv2.cvtColor(detection_bgr, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-        results = self._detector.detect(mp_image)
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
 
         # CLAHE on the L channel improves face detection in low light; skip its
         # colour conversions when the frame is bright.
@@ -188,7 +156,6 @@ class FaceDetector:
             detections += self._detect_region(tile, x, y)
 
         crops = []
-<<<<<<< HEAD
         for _, box, angle in _suppress_duplicates(detections, config.DETECTION_DUPLICATE_OVERLAP):
             box = tuple(int(v / scale) for v in box)
             x_min, y_min, x_max, y_max = _expand_bbox(*box, w, h, config.BBOX_EXPAND_RATIO)
@@ -209,29 +176,6 @@ class FaceDetector:
             crops.append((crop, bbox))
 
         return crops
-=======
-        for det in results.detections:
-            bb = det.bounding_box
-            x_min, y_min, x_max, y_max = _expand_bbox(
-                bb.origin_x / scale, bb.origin_y / scale,
-                (bb.origin_x + bb.width) / scale, (bb.origin_y + bb.height) / scale,
-                w, h, config.BBOX_EXPAND_RATIO,
-            )
-            x_min, y_min, x_max, y_max = map(int, (x_min, y_min, x_max, y_max))
-            if x_max <= x_min or y_max <= y_min:
-                continue
-
-            # Keypoints are normalised, so the angle is the same at either resolution.
-            angle = _get_rotation_angle(det.keypoints, w, h) if det.keypoints and len(det.keypoints) >= 2 else 0.0
-            if abs(angle) > config.ALIGNMENT_ANGLE_THRESHOLD:
-                crop = _align_face(frame_bgr, (x_min, y_min, x_max, y_max), angle)
-            else:
-                crop = frame_bgr[y_min:y_max, x_min:x_max].copy()
-
-            crops.append((crop, {"x": x_min, "y": y_min, "w": x_max - x_min, "h": y_max - y_min}))
-
-        return sorted(crops, key=lambda fc: fc[1]["w"] * fc[1]["h"], reverse=True)
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
 
     def _detect_region(self, rgb: np.ndarray, x_offset: int, y_offset: int) -> list:
         """Run BlazeFace on an RGB image; return (score, box offset into the detection frame, roll angle or None) per face."""

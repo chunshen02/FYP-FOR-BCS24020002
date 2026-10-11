@@ -46,15 +46,9 @@ class ScreenCapture:
             raise RuntimeError("ScreenCapture not started. Call start() first.")
 
         screenshot = self._sct.grab(self._region)
-<<<<<<< HEAD
         # mss returns BGRA. Slicing off alpha would be free here, but leaves a
         # non-contiguous view that makes every later OpenCV call silently copy
         # the whole frame first (~15 ms each at 2560x1600) — one cvtColor is ~1.6 ms.
-=======
-        # mss returns BGRA. Slicing off alpha would be free here but leaves a non-contiguous view
-        # that every later OpenCV call silently copies (~15 ms each at 2560x1600); one contiguous
-        # conversion (~2 ms) is far cheaper overall.
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
         return cv2.cvtColor(np.asarray(screenshot), cv2.COLOR_BGRA2BGR)
 
     def set_region(self, left: int, top: int, width: int, height: int):

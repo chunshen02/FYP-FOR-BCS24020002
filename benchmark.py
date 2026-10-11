@@ -1,23 +1,14 @@
 """
 benchmark.py
 
-<<<<<<< HEAD
-Measures end-to-end real-time detection pipeline performance.
-Mirrors DetectionWorker's architecture: the main loop (capture → face detection
-→ tracking) runs at DISPLAY_FPS while JPEG preprocessing and BitMind API calls
-run on a separate thread, so API latency is reported on its own and never
-counted against frame FPS/latency. Handles the case where the API key is not
-configured.
-=======
 Measures real-time performance of the whole detection pipeline, BitMind
 included. Mirrors DetectionWorker's architecture: the main loop (capture →
-face detection → tracking → JPEG preprocessing) runs at DISPLAY_FPS while
+face detection → tracking) runs at DISPLAY_FPS while JPEG preprocessing and
 BitMind API calls run on a separate thread. Reports the main loop's FPS and
 per-frame latency (broken down by stage), CPU and RAM while BitMind calls
 are in flight, and the end-to-end detection latency: time from the screen
 capture of a frame to BitMind's verdict on a face in it. Requires
 BITMIND_API_KEY and a face visible on screen.
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
 
 Usage:
     python benchmark.py
@@ -49,17 +40,10 @@ def _api_loop(engine, pending: dict, pending_lock: threading.Lock,
     while not stop.is_set():
         with pending_lock:
             if pending:
-<<<<<<< HEAD
-                face_id, (crop, bbox) = next(iter(pending.items()))
+                face_id, (crop, bbox, t_frame) = next(iter(pending.items()))
                 # Move it to the back so other faces get a turn next
                 del pending[face_id]
-                pending[face_id] = (crop, bbox)
-=======
-                face_id, (jpeg_bytes, bbox, t_frame) = next(iter(pending.items()))
-                # Move it to the back so other faces get a turn next
-                del pending[face_id]
-                pending[face_id] = (jpeg_bytes, bbox, t_frame)
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+                pending[face_id] = (crop, bbox, t_frame)
             else:
                 face_id = None
 
@@ -80,15 +64,7 @@ def _api_loop(engine, pending: dict, pending_lock: threading.Lock,
             continue
         if measuring.is_set():
             stats["api_ms"].append(result.api_response_ms)
-<<<<<<< HEAD
-
-
-def _detect_faces(detector: FaceDetector, frame: np.ndarray) -> list:
-    """Detect and keep the MAX_FACES most confident faces, as DetectionWorker does."""
-    return detector.detect(frame)[:config.MAX_FACES]
-=======
             stats["detection_ms"].append((time.perf_counter() - t_frame) * 1000)
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
 
 
 def run_benchmark_pass(pass_number: int) -> dict:
@@ -104,11 +80,7 @@ def run_benchmark_pass(pass_number: int) -> dict:
     detector = FaceDetector()
     tracker = _FaceTracker()
 
-<<<<<<< HEAD
-    pending: dict = {}   # face_id -> (crop_bgr, bbox)
-=======
-    pending: dict = {}   # face_id -> (jpeg_bytes, bbox, start time of the frame the crop came from)
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+    pending: dict = {}   # face_id -> (crop_bgr, bbox, start time of the frame the crop came from)
     pending_lock = threading.Lock()
     stop = threading.Event()
     measuring = threading.Event()
@@ -163,13 +135,8 @@ def run_benchmark_pass(pass_number: int) -> dict:
             face_ids = tracker.update([b for _, b in face_crops])
             alive_ids = tracker.alive_ids()
             with pending_lock:
-<<<<<<< HEAD
                 for fid, (crop, bbox) in zip(face_ids, face_crops):
-                    pending[fid] = (crop, bbox)
-=======
-                for fid, jpeg_bytes, (_, bbox) in zip(face_ids, jpegs, face_crops):
-                    pending[fid] = (jpeg_bytes, bbox, frame_start)
->>>>>>> 3bef4a09fe8c51c26d29703668d4889ad5fe4d31
+                    pending[fid] = (crop, bbox, frame_start)
                 for fid in [k for k in pending if k not in alive_ids]:
                     del pending[fid]
 
@@ -263,7 +230,7 @@ def print_summary(all_passes: list):
     row("Mean Frame Latency",  mean_latency, f"<={config.TARGET_LATENCY_MS}",  mean_latency <= config.TARGET_LATENCY_MS, " ms")
     info("  of which screen capture",  f"{capture_ms:.1f} ms")
     info("  of which face detection",  f"{detect_ms:.1f} ms")
-    info("  of which tracking + JPEG", f"{mean_latency - capture_ms - detect_ms:.1f} ms")
+    info("  of which tracking", f"{mean_latency - capture_ms - detect_ms:.1f} ms")
     row("Mean Detection Latency", mean_det_ms, f"<={config.TARGET_DETECTION_LATENCY_MS}",
         mean_det_ms is not None and mean_det_ms <= config.TARGET_DETECTION_LATENCY_MS, " ms")
     if mean_det_ms is not None:
