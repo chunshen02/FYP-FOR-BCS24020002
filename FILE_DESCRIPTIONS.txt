@@ -372,6 +372,25 @@ Offline pytest suite (no network, no API calls); run with
     table, all against a temporary SQLite file so session_log.db
     is never read or modified.
 
+----------------------------------------------------------------
+23. tracking_eval.py
+----------------------------------------------------------------
+Standalone offline evaluation of face-tracking ID stability on a
+FaceForensics++ dataset (default subsets: original,
+DeepFakeDetection, Deepfakes). Each video runs through the same
+detection front end as DetectionWorker and is sampled at roughly
+DISPLAY_FPS; no BitMind API calls are made. Since FF++ has no
+identity annotations, it measures proxies per video: the share of
+face-bearing ticks held by the most frequent ID, "tracker breaks"
+(a face re-IDed while its old track was still within the grace
+period) versus "gap breaks" (re-IDed after a detection gap longer
+than the grace period), and extra detections (mostly detector
+false positives). Runs videos in parallel worker processes,
+appends one CSV row per video so an interrupted run resumes, and
+prints per-subset statistics, a paired original-vs-manipulated
+comparison on the same source clips, and the worst videos for
+manual review. --summary-only re-prints the summary from the CSV.
+
 ================================================================
   END OF FILE DESCRIPTIONS
 ================================================================
