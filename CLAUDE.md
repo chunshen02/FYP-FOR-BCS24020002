@@ -29,8 +29,7 @@ Before reporting any task as complete:
 
 - After writing or modifying a script (tests, evaluation, benchmark, data
   preparation, etc.), do **not** run it immediately. The user runs scripts
-  themselves in the VS Code terminal (see `.vscode/tasks.json`) so the output
-  is visible to them.
+  themselves in the VS Code terminal so the output is visible to them.
 - The syntax and import checks above are still required; they do not execute
   the script's main logic.
 - Instead of running it, tell the user how to run it (the VS Code task name
@@ -48,7 +47,6 @@ Before reporting any task as complete:
 | HTTP client      | requests              | 2.32.3        |
 | Env vars         | python-dotenv         | 1.1.0         |
 | Numerics         | numpy                 | 2.2.5         |
-| System metrics   | psutil                | (unpinned)    |
 | Notifications    | plyer                 | (unpinned)    |
 | Detection API    | BitMind Oracle API    | v1            |
 | Local storage    | SQLite (stdlib)       | built-in      |
@@ -78,13 +76,14 @@ runtime/
     alert_system.py              # Taskbar flash / beep / desktop notification on alert
   storage/
     database.py                  # SQLite read/write for session event log
-benchmark.py                     # Standalone pipeline performance benchmark
 ```
 
 ## Key Configuration (config.py)
 
 - `BITMIND_API_KEY` — loaded from `.env` file (never hardcode)
-- `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → DEEPFAKE; below → REAL
+- `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → DEEPFAKE; below → REAL (user-adjustable in Settings)
+- `CONFIRM_VERDICTS = 3`, `CONFIRM_FAKE_VOTES = 2` — a first DEEPFAKE verdict is re-checked; 2 of 3 decide
+- `MAX_PENDING_FACES = 3` — faces awaiting a BitMind verdict at once; all faces are tracked and drawn
 - `DETECTION_TILE_GRID = 2` — N x N overlapping tiles for small-face detection (1 disables)
 - `ALERT_TRIGGER_FRAMES = 3` — consecutive DEEPFAKE frames to trigger alert
 - `ALERT_DISMISS_FRAMES = 8` — consecutive non-DEEPFAKE frames to auto-dismiss

@@ -5,6 +5,7 @@ Main application window matching the redesigned wireframe.
 Wires all GUI components and background threads.
 """
 
+import csv
 import threading
 import time
 from datetime import timedelta, datetime
@@ -25,8 +26,10 @@ from PyQt6.QtWidgets import (
     QDialog,
     QApplication,
     QScrollArea,
+    QFileDialog,
+    QMessageBox,
 )
-from PyQt6.QtCore import pyqtSlot, Qt, QTimer, QRectF, QPointF
+from PyQt6.QtCore import pyqtSignal, pyqtSlot, Qt, QTimer, QRectF, QPointF
 from PyQt6.QtGui import QColor, QFont, QIcon, QPixmap, QPainter, QPainterPath, QPen, QBrush
 import numpy as np
 import cv2
@@ -38,7 +41,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
-from runtime.gui.dialogs import SaveSessionDialog
+from runtime.gui.dialogs import SaveSessionDialog, SettingsDialog, load_saved_settings
 from runtime.gui.gauge_widget import GaugeWidget
 from runtime.gui.alert_system import notify_alert
 from runtime.capture.window_affinity import (
@@ -54,6 +57,7 @@ from runtime.detection.face_detector import FaceDetector
 from runtime.detection.inference import DeepfakeInferenceEngine
 from runtime.storage.database import (
     log_event as db_log_event, get_all_sessions, delete_session, delete_events_from, clear_history,
+    get_session_events, is_available as db_is_available, SESSION_EXPORT_FIELDS,
 )
 import config
 
@@ -97,8 +101,12 @@ class MainWindow(QMainWindow):
     Matches the reference wireframe exactly.
     """
 
+    # Emitted from the startup pre-init thread: (face model loaded, API key present).
+    components_ready = pyqtSignal(bool, bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        load_saved_settings()
         self.setWindowTitle("Real-Time Deepfake Detection System")
         self.setWindowIcon(_build_shield_icon())
         self.setMinimumSize(820, 600)
@@ -133,9 +141,11 @@ class MainWindow(QMainWindow):
         self._session_timer.timeout.connect(self._tick_session_duration)
 
         self._build_ui()
+        self._set_status("Idle")
         self.refresh_history()
 
         # Pre-init MediaPipe and HTTP session while the user is reading the UI
+        self.components_ready.connect(self._on_components_ready)
         threading.Thread(target=self._preinit_components, daemon=True).start()
 
     # -- UI Construction -------------------------------------------------------
@@ -184,6 +194,12 @@ class MainWindow(QMainWindow):
         history_title.setStyleSheet("color: #888; font-size: 10px;")
         history_header.addWidget(history_title)
         history_header.addStretch()
+        self._btn_export_session = QPushButton("Export CSV")
+        self._btn_export_session.setObjectName("btn_export_session")
+        self._btn_export_session.setFixedHeight(20)
+        self._btn_export_session.setEnabled(False)
+        self._btn_export_session.clicked.connect(self._on_export_selected_session)
+        history_header.addWidget(self._btn_export_session)
         self._btn_delete_session = QPushButton("Delete Selected")
         self._btn_delete_session.setObjectName("btn_delete_session")
         self._btn_delete_session.setFixedHeight(20)
@@ -204,7 +220,7 @@ class MainWindow(QMainWindow):
 
         # --- BOTTOM SECTION: Status Bar ---
         self.setStatusBar(QStatusBar())
-        self._update_status_bar()
+        self._build_status_bar()
 
     def _build_left_panel(self) -> QWidget:
         """Build left panel: video feed + control bar."""
@@ -299,6 +315,13 @@ class MainWindow(QMainWindow):
         self._btn_mini_mode.setToolTip("Collapse to a small always-on-top bar so the meeting window stays visible")
         self._btn_mini_mode.clicked.connect(self._toggle_mini_mode)
         control_bar.addWidget(self._btn_mini_mode)
+
+        btn_settings = QPushButton("⚙ Settings")
+        btn_settings.setObjectName("btn_clear_zone")
+        btn_settings.setFixedHeight(28)
+        btn_settings.setToolTip("Deepfake threshold and alert sound / notification / screenshot")
+        btn_settings.clicked.connect(self._on_open_settings)
+        control_bar.addWidget(btn_settings)
 
         control_bar.addStretch()
 
@@ -399,9 +422,11 @@ class MainWindow(QMainWindow):
         bar.setVisible(False)
         return bar
 
+    _MINI_THUMBNAILS = 3
+
     def _build_mini_face_strip(self) -> QWidget:
         """
-        Card showing live, actual face-crop thumbnails (up to MAX_FACES) for
+        Card showing live, actual face-crop thumbnails (the most suspicious few) for
         Mini mode — the whole point of the app is visual verification, so
         Mini mode must let the user SEE which face a score belongs to, not
         just an abstract percentage. Replaces the confidence gauge as the
@@ -423,7 +448,7 @@ class MainWindow(QMainWindow):
 
         strip_layout = QHBoxLayout()
         strip_layout.setSpacing(8)
-        self._mini_thumbnails = [FaceThumbnail(size=64) for _ in range(config.MAX_FACES)]
+        self._mini_thumbnails = [FaceThumbnail(size=64) for _ in range(self._MINI_THUMBNAILS)]
         for thumb in self._mini_thumbnails:
             strip_layout.addWidget(thumb)
         strip_layout.addStretch()
@@ -713,7 +738,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(title)
 
         status_row, self._status_value = self._build_info_row("👤", "Status")
-        self._status_value.setText("● Active")
         layout.addLayout(status_row)
 
         duration_row, self._duration_value = self._build_info_row("◷", "Duration")
@@ -769,48 +793,62 @@ class MainWindow(QMainWindow):
 
         return table
 
-    def _update_status_bar(self):
-        """Update status bar with current state."""
+    def _build_status_bar(self):
+        """Build the status bar: capture source, then live model / API key / DB indicators and the threshold."""
         status_bar = self.statusBar()
-        status_bar.clearMessage()
         status_bar.setStyleSheet(
             "background-color: #0B0E14; color: #6B7280; font-size: 10px; border-top: 1px solid #1F2430;"
         )
 
-        def _sep() -> QLabel:
-            lbl = QLabel("│")
-            lbl.setStyleSheet("color: #2A2E38;")
-            return lbl
-
-        lbl_source = QLabel("🎥  Source: Zoom")
+        lbl_source = QLabel("🎥  Source: Primary screen")
         lbl_source.setStyleSheet("color: #6B7280;")
+        self._sb_model = QLabel()
+        self._sb_api = QLabel()
+        self._sb_db = QLabel()
+        self._sb_threshold = QLabel()
+        self._sb_threshold.setStyleSheet("color: #6B7280;")
 
-        lbl_model = QLabel("✓  Model loaded")
-        lbl_model.setStyleSheet("color: #22C55E;")
+        for i, label in enumerate((lbl_source, self._sb_model, self._sb_api, self._sb_db, self._sb_threshold)):
+            if i:
+                sep = QLabel("│")
+                sep.setStyleSheet("color: #2A2E38;")
+                status_bar.addPermanentWidget(sep)
+            status_bar.addPermanentWidget(label)
 
-        lbl_db = QLabel("✓  DB connected")
-        lbl_db.setStyleSheet("color: #22C55E;")
+        self._set_indicator(self._sb_model, None, "Model loading…")
+        self._set_indicator(self._sb_api, None, "API key checking…")
+        db_ok = db_is_available()
+        self._set_indicator(self._sb_db, db_ok, "DB connected" if db_ok else "DB unavailable")
+        self._refresh_threshold_label()
 
-        lbl_threshold = QLabel(f"◎  Threshold: {config.FAKE_THRESHOLD * 100:.0f}%")
-        lbl_threshold.setStyleSheet("color: #6B7280;")
+    @staticmethod
+    def _set_indicator(label: QLabel, ok: bool | None, text: str):
+        """Show a status-bar indicator as ✓ (ok), ✗ (failed) or ◌ (still pending)."""
+        icon, colour = {True: ("✓", "#22C55E"), False: ("✗", "#EF4444"), None: ("◌", "#6B7280")}[ok]
+        label.setText(f"{icon}  {text}")
+        label.setStyleSheet(f"color: {colour};")
 
-        status_bar.addPermanentWidget(lbl_source)
-        status_bar.addPermanentWidget(_sep())
-        status_bar.addPermanentWidget(lbl_model)
-        status_bar.addPermanentWidget(_sep())
-        status_bar.addPermanentWidget(lbl_db)
-        status_bar.addPermanentWidget(_sep())
-        status_bar.addPermanentWidget(lbl_threshold)
+    def _refresh_threshold_label(self):
+        self._sb_threshold.setText(f"◎  Threshold: {config.FAKE_THRESHOLD * 100:.0f}%")
 
     def _preinit_components(self):
         """Load MediaPipe model and open HTTP session once at startup."""
+        # Each component is kept independently, so a missing API key does not
+        # throw away an already-loaded face model.
         try:
-            detector = FaceDetector()
-            engine = DeepfakeInferenceEngine()
-            self._shared_detector = detector
-            self._shared_engine = engine
+            self._shared_detector = FaceDetector()
         except Exception:
-            pass  # Worker falls back to creating its own and surfaces any API key error
+            pass  # Worker retries on Start and surfaces the error then
+        try:
+            self._shared_engine = DeepfakeInferenceEngine()
+        except EnvironmentError:
+            pass  # Worker raises the missing-key error on Start
+        self.components_ready.emit(self._shared_detector is not None, self._shared_engine is not None)
+
+    @pyqtSlot(bool, bool)
+    def _on_components_ready(self, detector_ok: bool, api_key_ok: bool):
+        self._set_indicator(self._sb_model, detector_ok, "Model loaded" if detector_ok else "Model failed to load")
+        self._set_indicator(self._sb_api, api_key_ok, "API key set" if api_key_ok else "API key missing")
 
     def refresh_history(self):
         """Reload session history from database and update table visibility."""
@@ -889,7 +927,27 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_history_selection_changed(self):
-        self._btn_delete_session.setEnabled(self._history_table.currentRow() >= 0)
+        selected = self._history_table.currentRow() >= 0
+        self._btn_delete_session.setEnabled(selected)
+        self._btn_export_session.setEnabled(selected)
+
+    @pyqtSlot()
+    def _on_export_selected_session(self):
+        row = self._history_table.currentRow()
+        if row < 0:
+            return
+        started_at = self._history_table.item(row, 0).text()
+        default_name = f"session_{started_at.replace('-', '').replace(':', '').replace(' ', '_')}.csv"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export session", os.path.join(config.BASE_DIR, default_name), "CSV files (*.csv)"
+        )
+        if not path:
+            return
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=SESSION_EXPORT_FIELDS)
+            writer.writeheader()
+            writer.writerows(get_session_events(started_at))
+        self._session_log_event("INFO", f"Session exported: {os.path.basename(path)}")
 
     @pyqtSlot()
     def _on_delete_selected_session(self):
@@ -902,8 +960,24 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_clear_all_sessions(self):
+        answer = QMessageBox.question(
+            self, "Clear all history",
+            "Delete every saved session? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
         clear_history()
         self.refresh_history()
+
+    @pyqtSlot()
+    def _on_open_settings(self):
+        if SettingsDialog(parent=self).exec() == QDialog.DialogCode.Accepted:
+            self._refresh_threshold_label()
+            self._session_log_event(
+                "INFO", f"Settings saved (threshold {config.FAKE_THRESHOLD * 100:.0f}%)."
+            )
 
     # -- Detection Control -----------------------------------------------------
 
@@ -986,6 +1060,8 @@ class MainWindow(QMainWindow):
         self._detection_worker.low_light_warning.connect(self._on_low_light_warning)
         self._detection_worker.face_count_update.connect(self._on_face_count_update)
         self._detection_worker.degraded_mode.connect(self._on_degraded_mode)
+        self._detection_worker.api_key_rejected.connect(self._on_api_key_rejected)
+        self._detection_worker.api_notice.connect(lambda msg: self._session_log_event("INFO", msg))
 
         # Alert thread
         self._alert_thread = AlertThread()
@@ -1004,6 +1080,8 @@ class MainWindow(QMainWindow):
 
         self._session_log_event("SESSION", "Detection started.")
         self._session_start_id = db_log_event("SESSION", "Detection started.")
+        if self._session_start_id is None:
+            self._set_indicator(self._sb_db, False, "DB write failed")
 
         # Nudge the window to a screen edge so it's less likely to default
         # to a position that overlaps the meeting window. This app doesn't
@@ -1072,18 +1150,22 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_screenshot(self):
+        if not self._video_widget.has_frame:
+            self._session_log_event("INFO", "Screenshot skipped: no active feed.")
+            return
+        filename = self._save_screenshot("screenshot")
+        self._session_log_event("INFO", f"Screenshot saved: {filename}")
+
+    def _save_screenshot(self, prefix: str) -> str:
         """
         Save a full-screen PNG (this app's own window and its detection
         overlay included, plus whatever else is on screen) to the
         screenshots folder — evidence of what was actually seen, not just
-        the video feed. Briefly lifts this window's capture exclusion,
-        under capture_affinity_lock so DetectionWorker's live capture loop
-        can never overlap that window and pick up the un-excluded app.
+        the video feed — and return its filename. Briefly lifts this
+        window's capture exclusion, under capture_affinity_lock so
+        DetectionWorker's live capture loop can never overlap that window
+        and pick up the un-excluded app.
         """
-        if not self._video_widget.has_frame:
-            self._session_log_event("INFO", "Screenshot skipped: no active feed.")
-            return
-
         hwnd = int(self.winId())
         with capture_affinity_lock:
             cleared = self._capture_affinity_value is not None and clear_capture_exclusion(hwnd)
@@ -1098,10 +1180,9 @@ class MainWindow(QMainWindow):
         screenshots_dir = os.path.join(config.BASE_DIR, "screenshots")
         os.makedirs(screenshots_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"screenshot_{timestamp}.png"
-        path = os.path.join(screenshots_dir, filename)
-        cv2.imwrite(path, shot)
-        self._session_log_event("INFO", f"Screenshot saved: {filename}")
+        filename = f"{prefix}_{timestamp}.png"
+        cv2.imwrite(os.path.join(screenshots_dir, filename), shot)
+        return filename
 
     @pyqtSlot()
     def _on_acknowledge_alert(self):
@@ -1193,19 +1274,18 @@ class MainWindow(QMainWindow):
             self._set_status("Detecting")
             self._session_log_event("INFO", "BitMind API connection recovered.")
 
-    @pyqtSlot(int, int)
-    def _on_face_count_update(self, shown: int, total: int):
-        if shown == 0:
-            self._faces_label.setText("—")
-            self._faces_label.setToolTip("")
-        elif total > shown:
-            self._faces_label.setText(f"{shown}/{total}")
-            self._faces_label.setToolTip(
-                f"Analyzing {shown} of {total} detected faces (max {config.MAX_FACES})"
-            )
-        else:
-            self._faces_label.setText(str(shown))
-            self._faces_label.setToolTip("")
+    @pyqtSlot(int)
+    def _on_face_count_update(self, count: int):
+        self._faces_label.setText(str(count) if count else "—")
+
+    @pyqtSlot(str)
+    def _on_api_key_rejected(self, error_msg: str):
+        """The API refused the key, so no face can be classified — stop the session with a clear cause."""
+        self._set_indicator(self._sb_api, False, "API key rejected")
+        detail = f"BitMind API key rejected — check BITMIND_API_KEY in .env. ({error_msg})"
+        self._session_log_event("ERROR", detail)
+        db_log_event("ERROR", detail)
+        self._on_stop()
 
     @pyqtSlot(float, list)
     def _on_alert_triggered(self, peak_p_fake: float, explanation: list):
@@ -1224,6 +1304,10 @@ class MainWindow(QMainWindow):
         detail = f"Deepfake detected — Peak confidence: {peak_p_fake:.1%}"
         self._session_log_event("ALERT", detail)
         db_log_event("ALERT", detail, peak_confidence=peak_p_fake)
+        if config.ALERT_AUTO_SCREENSHOT:
+            evidence = f"Evidence screenshot saved: {self._save_screenshot('alert')}"
+            self._session_log_event("INFO", evidence)
+            db_log_event("INFO", evidence)
 
     @pyqtSlot()
     def _on_alert_dismissed(self):
@@ -1385,7 +1469,8 @@ QPushButton#btn_acknowledge:hover {
     background-color: #FBB63A;
 }
 
-QPushButton#btn_clear_log, QPushButton#btn_delete_session, QPushButton#btn_clear_history {
+QPushButton#btn_clear_log, QPushButton#btn_export_session, QPushButton#btn_delete_session,
+QPushButton#btn_clear_history {
     background-color: transparent;
     border: 1px solid #262B36;
     color: #8A93A3;
@@ -1393,10 +1478,14 @@ QPushButton#btn_clear_log, QPushButton#btn_delete_session, QPushButton#btn_clear
     padding: 2px 10px;
     font-size: 11px;
 }
-QPushButton#btn_clear_log:hover {
+QPushButton#btn_clear_log:hover, QPushButton#btn_export_session:hover {
     background-color: #1B1F29;
     border-color: #333A48;
     color: #E5E7EB;
+}
+QPushButton#btn_export_session:disabled {
+    border-color: #1B1F29;
+    color: #3A4150;
 }
 
 QPushButton#btn_delete_session {

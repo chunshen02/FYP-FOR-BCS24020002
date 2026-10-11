@@ -38,23 +38,6 @@ class Preprocessor:
             resized = cv2.LUT(resized, self._gamma_lut)
         return resized
 
-    def process(self, face_bgr: np.ndarray) -> bytes:
-        """
-        Convert a BGR face crop to JPEG bytes.
-
-        Args:
-            face_bgr: BGR numpy array of the aligned face crop (any size).
-
-        Returns:
-            JPEG-encoded bytes of the face crop.
-        """
-        resized = self._prepare(face_bgr)
-        _, buf = cv2.imencode(
-            '.jpg', resized,
-            [cv2.IMWRITE_JPEG_QUALITY, config.FACE_CROP_JPEG_QUALITY]
-        )
-        return buf.tobytes()
-
     def process_with_array(self, face_bgr: np.ndarray) -> tuple:
         """
         Convert a BGR face crop to JPEG bytes, also returning the pre-encode

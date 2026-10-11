@@ -17,20 +17,25 @@ Central configuration file that stores all tuneable constants
 used across the entire project. This includes:
   - File paths (database location)
   - BitMind API endpoint URL and timeout settings
-  - Rate limit delay between API requests
+  - Rate limit delay between API requests, and the back-off used
+    after an HTTP 429 response
   - MediaPipe face detection confidence threshold, detection
     working width (DETECTION_MAX_WIDTH), tiled detection settings
-    (grid size, tile overlap, duplicate merging), and faces per frame
+    (grid size, tile overlap, duplicate merging), and how many faces
+    may await a verdict at once (MAX_PENDING_FACES)
   - Bounding box expansion ratio and alignment angle threshold
   - Face crop size and JPEG quality for API submission
   - Fake threshold (FAKE_THRESHOLD) for the binary REAL/DEEPFAKE
-    decision
-  - Alert trigger and dismiss frame counters
-  - Performance benchmark targets (FPS, latency, CPU, RAM)
+    decision, and verdict confirmation (CONFIRM_VERDICTS,
+    CONFIRM_FAKE_VOTES)
+  - Alert trigger and dismiss frame counters, and the alert cue
+    switches (sound, desktop notification, evidence screenshot)
   - Low-light detection threshold and gamma correction exponent
   - Local explainability (CV heuristic) thresholds
 No logic lives here — only constants. All other modules import
-from this file, making tuning a one-place operation.
+from this file, making tuning a one-place operation. FAKE_THRESHOLD
+and the alert cue switches are overridden at startup by any values
+saved from the Settings dialog (see dialogs.py).
 
 ----------------------------------------------------------------
 3. runtime/capture/screen_capture.py
@@ -64,8 +69,6 @@ tilt exceeds a threshold, the crop is rotated upright about the
 face's own centre. Returns a list of (crop, bbox) tuples sorted
 most confident face first, with bbox in full-resolution frame
 pixels, used by the overlay renderer and inference engine.
-DetectionWorker and all evaluation scripts share this one
-detection front end.
 
 ----------------------------------------------------------------
 5. runtime/detection/preprocessor.py
@@ -77,8 +80,9 @@ size (FACE_CROP_SIZE) — area interpolation when shrinking, which
 avoids aliasing artifacts, and cubic when enlarging — applies gamma
 correction to brighten crops detected as low-light, and encodes
 the result as JPEG at the configured quality (FACE_CROP_JPEG_QUALITY).
-process_with_array() additionally returns the pre-encode BGR array
-(no JPEG round-trip) for local artifact analysis in explainer.py,
+process_with_array() returns the JPEG bytes together with the
+pre-encode BGR array (no JPEG round-trip) for local artifact
+analysis in explainer.py,
 and is also what Mini Mode displays as the face thumbnail. OpenCV
 handles the BGR-to-YCbCr conversion internally, so the resulting
 JPEG decodes correctly as RGB on the server side.
@@ -101,7 +105,12 @@ returns classification results. Key components:
     rate limit on the free tier by spacing request start times
     (not the gap after each response), base64-encodes the JPEG payload,
     POSTs it to the API, and parses the isAI + confidence fields
-    to derive P_fake.
+    to derive P_fake. Failures are raised as typed errors: auth
+    (401/403), rate limit (429, carrying any Retry-After value),
+    transient (timeout, connection, 5xx), or other.
+
+  - risk_level_for(): maps a P_fake score to REAL/DEEPFAKE using
+    the current FAKE_THRESHOLD.
 
 ----------------------------------------------------------------
 7. runtime/detection/explainer.py
@@ -128,22 +137,30 @@ continuously in the background. Architecture:
 
   - Main loop (~15 FPS): captures a screen frame, masks the app's
     own window region for display, optionally crops to a
-    user-selected detection zone, runs face detection, keeps the
-    MAX_FACES most confident faces, assigns stable IDs via
-    _FaceTracker, queues crops of faces that need
-    (re-)classification, emits annotated frames, FaceResult
-    lists, and pending bboxes to the GUI thread via Qt signals.
-    Also emits a low-light warning based on a cheap downsampled
-    brightness check and the count of shown vs. total detected
-    faces.
+    user-selected detection zone, runs face detection, assigns
+    stable IDs to every detected face via _FaceTracker, queues
+    crops of faces that need (re-)classification — at most
+    MAX_PENDING_FACES at once, most confident first; a classified
+    face frees its slot for the next — and emits annotated frames,
+    FaceResult lists, and pending bboxes to the GUI thread via Qt
+    signals. Also emits a low-light warning based on a cheap
+    downsampled brightness check and the detected face count.
 
   - API daemon thread: round-robins through all queued faces,
     JPEG-encoding each crop and calling the BitMind API once per
     face per cycle (rate limit is enforced inside
-    DeepfakeInferenceEngine), running the local explainer on
-    DEEPFAKE results. Results are cached and shared back to the
-    main loop via a thread-safe lock. A classified face is locked
-    until the user requests a manual re-check.
+    DeepfakeInferenceEngine). A first REAL verdict is final; a
+    first DEEPFAKE verdict keeps the face queued for more verdicts
+    on fresh frames until CONFIRM_FAKE_VOTES of CONFIRM_VERDICTS
+    agree, and the face's final score is the median of its
+    verdicts. The local explainer runs on confirmed DEEPFAKE
+    results. Results are cached and shared back to the main loop
+    via a thread-safe lock; a classified face is locked until the
+    user requests a manual re-check. Transient failures count
+    towards a Degraded state; an HTTP 429 pauses requests (Retry-
+    After, or a doubling back-off) without counting as a failure;
+    a rejected API key stops the API thread and is reported via
+    api_key_rejected.
 
   - _FaceTracker: assigns stable string IDs to faces across
     frames using bounding box centre proximity, ensuring that
@@ -177,9 +194,12 @@ and background threads together. Responsibilities include:
   - Building the full window layout: left panel (video + control
     bar), right panel (confidence gauge, Detection Analysis card,
     alert card, session info card, system log), session history
-    table, and status bar.
+    table, and status bar. The status bar shows live indicators
+    for the face model, the API key, and the database, plus the
+    current threshold.
   - Starting and stopping DetectionWorker and AlertThread,
-    connecting all Qt signals to their respective slots.
+    connecting all Qt signals to their respective slots; a
+    rejected API key stops the session with a clear message.
   - Updating the confidence gauge, FPS readout, face count,
     API response time, and session duration in real time.
   - Showing/hiding the alert card, syncing the always-visible
@@ -187,7 +207,11 @@ and background threads together. Responsibilities include:
     status indicators (Idle / Initializing / Detecting / Alert /
     Stopping).
   - Prompting the user to save or discard the session on stop.
-  - Taking screenshots of the live video feed.
+  - Saving full-screen screenshots on demand, and automatically as
+    evidence when an alert fires (if enabled in Settings).
+  - Session history: exporting the selected session's events to
+    CSV, deleting it, or clearing all history after confirmation.
+  - Opening the Settings dialog.
   - Handling detection-zone selection events from VideoWidget and
     forwarding them to DetectionWorker.
   - Mini Mode: collapsing to a small always-on-top bar with live
@@ -244,7 +268,7 @@ full video preview. set_face() displays the exact preprocessed BGR
 crop that was analyzed (from FaceResult.thumbnail), with a
 risk-coloured border (green/red) and a confidence percentage label;
 clear() hides the slot when fewer faces are currently tracked than
-the fixed thumbnail pool size (MAX_FACES).
+the fixed thumbnail pool size (three, most suspicious first).
 
 ----------------------------------------------------------------
 14. runtime/gui/session_log.py
@@ -274,14 +298,21 @@ to drop it. The dialog result is checked in MainWindow._on_stop():
 Save writes the stop event, Discard deletes every event logged
 since the session's start event.
 
+Also contains SettingsDialog, which edits FAKE_THRESHOLD and the
+alert cue switches (beep, desktop notification, evidence
+screenshot). Save applies the values to the config module at once
+and persists them with QSettings; load_saved_settings() re-applies
+them at startup, and "Reset to defaults" restores config.py's
+values.
+
 ----------------------------------------------------------------
 16. runtime/gui/alert_system.py
 ----------------------------------------------------------------
 Provides notify_alert(), called when an alert fires so it is
 noticed even while the meeting window has focus: it flashes the
-app's taskbar entry, plays the system beep, and sends a desktop
-toast notification via the plyer library showing the peak P_fake
-confidence score. The toast runs on a daemon thread because
+app's taskbar entry and, unless disabled in Settings, plays the
+system beep and sends a desktop toast notification via the plyer
+library showing the peak P_fake confidence score. The toast runs on a daemon thread because
 plyer's Windows backend blocks for the notification's duration,
 and is wrapped in a try/except so that an unavailable
 notification backend never crashes the application.
@@ -310,113 +341,20 @@ functions:
   - log_event(): inserts a timestamped record with event type,
     detail text, and optional numeric fields (peak_confidence,
     breach_duration_sec, faces_detected, api_response_ms).
-  - get_session_history(): retrieves the most recent raw event
-    rows ordered by ID descending.
   - get_all_sessions(): reconstructs completed sessions from the
     event log by pairing "Detection started" and "Detection
     stopped" SESSION events in chronological order, counting
     ALERT events in between, and computing the duration — returns
     a list of summary dicts displayed in the history table.
+  - is_available(): whether the database can be opened, for the
+    status bar indicator.
+  - get_session_events(): returns every event of one session,
+    oldest first, for CSV export.
   - delete_session(): deletes all events belonging to a single
     session, identified by its start timestamp, used by the
     "Delete Selected" control in the history table.
   - clear_history(): deletes all records (used by the "Clear All"
-    control and for testing).
-
-----------------------------------------------------------------
-19. benchmark.py
-----------------------------------------------------------------
-Standalone script for measuring real-time performance of the whole
-pipeline, BitMind included; it exits with an error if
-BITMIND_API_KEY is not configured. It mirrors DetectionWorker's
-architecture: the main loop (screen capture, tiled face detection,
-tracking) runs at DISPLAY_FPS, while JPEG preprocessing and BitMind
-API calls run round-robin on a separate thread. It runs
-BENCHMARK_REPEAT passes, each consisting of a warmup phase
-followed by a measurement phase. Per pass it records:
-  - Main-loop frame latency (ms), split into screen capture, face
-    detection, and tracking
-  - FPS sampled every second
-  - CPU utilisation (psutil, system-wide)
-  - Peak RAM usage (psutil)
-  - End-to-end detection latency (ms): from the screen capture of
-    a frame to BitMind's verdict on a face in it, split into the
-    BitMind API response time and local processing + queue wait
-  - BitMind call/failure counts (a face must be visible on screen)
-
-After all passes it prints a summary table comparing measured
-values against the targets defined in config.py (TARGET_FPS,
-TARGET_LATENCY_MS, TARGET_DETECTION_LATENCY_MS,
-TARGET_CPU_PERCENT, TARGET_RAM_MB) with PASS/FAIL status for each
-metric.
-
-----------------------------------------------------------------
-20. evaluation_runner.py
-----------------------------------------------------------------
-Standalone script that evaluates deepfake detection accuracy
-against labelled folders of images and/or video clips: one real
-folder and one or more deepfake folders (defaults to
-test_samples/real/ and test_samples/deepfake/; minimum 10 files
-total, at least 1 per folder). A FaceForensics++ root is evaluated
-directly from its videos via --real-subdir original --fake-subdir
-<Method> [<Method> ...]; the real set is classified once and
-shared by every method. --limit N takes the first N files per
-folder, and --frames-per-video N samples N frames from the middles
-of N equal segments (N=1 gives the temporal midpoint). Runs each
-image or sampled video frame through the full pipeline — face
-detection, JPEG preprocessing, BitMind API — with exactly one
-BitMind call on the largest face, so every score is a single
-BitMind verdict and the metrics measure BitMind's accuracy on the
-face crops the app sends; frames with no detected face are
-submitted whole, for pre-cropped datasets. A failed API call
-(including a malformed response) skips that sample instead of
-aborting the run.
-
-Each result is appended to the CSV as soon as it arrives;
-re-running with the same --csv-path skips completed samples, so an
-interrupted run resumes and failed samples are retried. The
-summary reports real-face specificity and, per deepfake folder,
-TP/FN, recall, precision, accuracy, F1, ROC-AUC and mean P_fake,
-plus a threshold sweep (false-positive rate and per-method recall
-at thresholds 0.1-0.9) for recalibrating FAKE_THRESHOLD.
---summary-only re-prints it from the CSV without any API calls,
-recomputing decisions with the current FAKE_THRESHOLD. Unless
---no-db is passed, results are also written to the session
-database with ground truth labels; such a run also appears as a
-session in the app's history table.
-
-----------------------------------------------------------------
-21. test_face_tracker.py / test_history.py
-----------------------------------------------------------------
-Offline pytest suite (no network, no API calls); run with
-`pytest` from the project root.
-  - test_face_tracker.py: _FaceTracker / match_tracks() / _iou() —
-    id stability, IoU matching on fast movement, occlusion grace
-    period, and the documented position-swap limitation.
-  - test_history.py: database.py session storage (event logging,
-    session reconstruction with duration and alert count,
-    delete_session, clear_history) and the MainWindow history
-    table, all against a temporary SQLite file so session_log.db
-    is never read or modified.
-
-----------------------------------------------------------------
-22. tracking_eval.py
-----------------------------------------------------------------
-Standalone offline evaluation of face-tracking ID stability on a
-FaceForensics++ dataset (default subsets: original,
-DeepFakeDetection, Deepfakes). Each video runs through the same
-detection front end as DetectionWorker and is sampled at roughly
-DISPLAY_FPS; no BitMind API calls are made. Since FF++ has no
-identity annotations, it measures proxies per video: the share of
-face-bearing ticks held by the most frequent ID, "tracker breaks"
-(a face re-IDed while its old track was still within the grace
-period) versus "gap breaks" (re-IDed after a detection gap longer
-than the grace period), and extra detections (mostly detector
-false positives). Runs videos in parallel worker processes,
-appends one CSV row per video so an interrupted run resumes, and
-prints per-subset statistics, a paired original-vs-manipulated
-comparison on the same source clips, and the worst videos for
-manual review. --summary-only re-prints the summary from the CSV.
+    control).
 
 ================================================================
   END OF FILE DESCRIPTIONS

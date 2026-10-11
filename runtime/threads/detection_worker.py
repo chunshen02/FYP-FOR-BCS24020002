@@ -14,6 +14,7 @@ Architecture:
                 remains consistent even as faces reorder.
 """
 
+import statistics
 import threading
 import time
 from dataclasses import replace
@@ -28,12 +29,22 @@ from runtime.capture.screen_capture import ScreenCapture
 from runtime.capture import window_affinity
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
-from runtime.detection.inference import DeepfakeInferenceEngine, BitmindAPIError, BitmindAuthError
+from runtime.detection.inference import (
+    DeepfakeInferenceEngine, BitmindAPIError, BitmindAuthError, BitmindRateLimitError, risk_level_for,
+)
 from runtime.detection.explainer import analyze_artifacts
 from runtime.storage.database import log_event as db_log_event
 import config
 
 _FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
+
+
+def _verdict_decided(votes: list) -> bool:
+    """Whether a face's P_fake verdicts settle it (see CONFIRM_VERDICTS in config.py)."""
+    fakes = sum(p >= config.FAKE_THRESHOLD for p in votes)
+    reals = len(votes) - fakes
+    return (fakes == 0 or fakes >= config.CONFIRM_FAKE_VOTES
+            or reals > config.CONFIRM_VERDICTS - config.CONFIRM_FAKE_VOTES)
 
 
 def _centroid(box: dict) -> tuple:
@@ -170,11 +181,14 @@ class DetectionWorker(QThread):
     Signals:
         frame_ready(np.ndarray, list, list, list): BGR frame, list of FaceResult
             (locked — classified once, awaiting manual re-check to run again),
-            list of pending bboxes (never yet classified), list of FaceResult
-            being re-checked (previous verdict, a fresh classification is in flight).
+            list of pending bboxes (not yet classified, or verdicts still being
+            confirmed), list of FaceResult being re-checked (previous verdict,
+            a fresh classification is in flight).
         fps_update(float): Current processing FPS.
         api_response_update(float): Most recent BitMind API response time (ms).
         error_occurred(str): Error message if the pipeline crashes.
+        api_key_rejected(str): The API refused the key (HTTP 401/403); the API thread has stopped.
+        api_notice(str): Informational API message for the session log (e.g. a rate-limit pause).
     """
 
     frame_ready = pyqtSignal(object, object, object, object)
@@ -182,8 +196,10 @@ class DetectionWorker(QThread):
     api_response_update = pyqtSignal(float)
     error_occurred = pyqtSignal(str)
     low_light_warning = pyqtSignal(bool)
-    face_count_update = pyqtSignal(int, int)   # (shown, total_detected)
+    face_count_update = pyqtSignal(int)
     degraded_mode = pyqtSignal(bool)           # True when the BitMind API is unreachable
+    api_key_rejected = pyqtSignal(str)
+    api_notice = pyqtSignal(str)
 
     def __init__(self, region: dict = None, face_detector=None, engine=None, parent=None):
         super().__init__(parent)
@@ -200,6 +216,7 @@ class DetectionWorker(QThread):
         # instead of "Analyzing..." for a face that already has a result.
         self._locked_ids: set = set()
         self._recheck_ids: set = set()
+        self._votes: dict = {}   # face_id -> P_fake verdicts so far, until _verdict_decided; guarded by _pending_lock
         self._inflight_lock = threading.Lock()
         self._inflight_id: str | None = None   # face currently mid-HTTP-call, protected from track eviction
         self._excl_lock = threading.Lock()
@@ -216,6 +233,7 @@ class DetectionWorker(QThread):
         self._cached_results.clear()
         self._locked_ids.clear()
         self._recheck_ids.clear()
+        self._votes.clear()
         self._inflight_id = None
 
         capture = ScreenCapture(region=self._region)
@@ -248,7 +266,7 @@ class DetectionWorker(QThread):
         frame_count = 0
         fps_timer_start = time.perf_counter()
         last_low_light = None
-        last_face_counts = None
+        last_face_count = None
 
         try:
             while self._running:
@@ -300,16 +318,9 @@ class DetectionWorker(QThread):
                                 and ey <= b["y"] + b["h"] // 2 < ey + eh)
                     ]
 
-                # Cap to the MAX_FACES most confident faces (detect() returns them
-                # in that order) so API load stays bounded. Ranking by box area
-                # instead let one large low-confidence false positive (e.g. on a
-                # dark text area) push a real face out of analysis.
-                total_detected = len(face_crops)
-                face_crops = face_crops[:config.MAX_FACES]
-                face_counts = (len(face_crops), total_detected)
-                if face_counts != last_face_counts:
-                    self.face_count_update.emit(*face_counts)
-                    last_face_counts = face_counts
+                if len(face_crops) != last_face_count:
+                    last_face_count = len(face_crops)
+                    self.face_count_update.emit(last_face_count)
 
                 bboxes = [b for _, b in face_crops]
                 with self._inflight_lock:
@@ -322,17 +333,22 @@ class DetectionWorker(QThread):
                 keep_ids = alive_ids | protected_ids
 
                 with self._pending_lock:
-                    for (crop, bbox), fid in zip(face_crops, face_ids):
-                        # Locked faces already have a result — only a
-                        # manual re-check (which clears the lock) makes
-                        # them eligible for another classification cycle.
-                        if fid not in self._locked_ids:
-                            self._pending_faces[fid] = (crop, bbox)
                     self._pending_faces = {
                         k: v for k, v in self._pending_faces.items() if k in keep_ids
                     }
+                    self._votes = {k: v for k, v in self._votes.items() if k in keep_ids}
                     self._locked_ids &= alive_ids
                     self._recheck_ids &= alive_ids
+                    # detect() returns faces most confident first, so those claim
+                    # the MAX_PENDING_FACES queue slots first; a slot frees once
+                    # its face is classified and locked. Locked faces already
+                    # have a result — only a manual re-check (which clears the
+                    # lock) makes them eligible for another classification cycle.
+                    for (crop, bbox), fid in zip(face_crops, face_ids):
+                        if fid in self._locked_ids:
+                            continue
+                        if fid in self._pending_faces or len(self._pending_faces) < config.MAX_PENDING_FACES:
+                            self._pending_faces[fid] = (crop, bbox)
                 with self._result_lock:
                     self._cached_results = {
                         k: v for k, v in self._cached_results.items() if k in keep_ids
@@ -381,14 +397,15 @@ class DetectionWorker(QThread):
     def _api_loop(self, engine: DeepfakeInferenceEngine):
         """
         Daemon thread: round-robin through pending face crops, calling the
-        BitMind API once per face per cycle (rate limit + retries enforced
-        inside the engine). Tracks consecutive failures across cycles so a
+        BitMind API once per face per cycle (rate limit enforced inside the
+        engine). Tracks consecutive failures across cycles so a
         struggling connection surfaces as Degraded rather than crashing the
         thread or silently corrupting cached results.
         """
         preprocessor = Preprocessor()
         consecutive_failures = 0
         degraded = False
+        rate_limit_backoff = config.BITMIND_RATE_LIMIT_BACKOFF_SEC
 
         while self._running:
             with self._pending_lock:
@@ -412,18 +429,24 @@ class DetectionWorker(QThread):
             with self._inflight_lock:
                 self._inflight_id = face_id
             try:
-                # Single HTTP attempt, not the multi-attempt retry version —
-                # a face stuck retrying internally would block this whole
-                # single-threaded loop and starve every other pending face.
+                # Single HTTP attempt with no retry loop — a face stuck
+                # retrying would block this whole single-threaded loop and
+                # starve every other pending face.
                 # On failure we just fall through to "continue": the face is
                 # already sitting at the back of _pending_faces (moved there
                 # above, before this attempt), so it naturally gets retried
                 # on its next round-robin turn instead of hogging this one.
                 result = engine.run_single_attempt(jpeg_bytes, bbox, face_id)
             except BitmindAuthError as e:
-                # An invalid/revoked key never self-heals via retry — escalate immediately.
-                consecutive_failures = config.BITMIND_DEGRADED_FAILURE_THRESHOLD
-                degraded = self._report_api_failure(e, degraded, consecutive_failures)
+                # An invalid/revoked key never self-heals, so stop calling the API altogether.
+                self.api_key_rejected.emit(str(e))
+                return
+            except BitmindRateLimitError as e:
+                # The server is reachable, just busy — pause instead of counting towards Degraded.
+                pause = e.retry_after or rate_limit_backoff
+                rate_limit_backoff = min(rate_limit_backoff * 2, config.BITMIND_RATE_LIMIT_BACKOFF_MAX_SEC)
+                self.api_notice.emit(f"BitMind rate limit reached — pausing requests for {pause:.0f}s.")
+                self._sleep_while_running(pause)
                 continue
             except BitmindAPIError as e:
                 consecutive_failures += 1
@@ -436,16 +459,44 @@ class DetectionWorker(QThread):
             if consecutive_failures or degraded:
                 consecutive_failures = 0
                 degraded = self._report_api_recovery(degraded)
+            rate_limit_backoff = config.BITMIND_RATE_LIMIT_BACKOFF_SEC
 
-            result.thumbnail = resized_bgr  # exact crop that was analyzed, for Mini mode display
+            with self._pending_lock:
+                was_recheck = face_id in self._recheck_ids
+                votes = self._votes.setdefault(face_id, [])
+                votes.append(result.p_fake_raw)
+                decided = _verdict_decided(votes)
+                if decided:
+                    del self._votes[face_id]
 
+            # Every verdict is logged, not just the final one, so the raw
+            # P_fake distribution can support future FAKE_THRESHOLD recalibration.
+            db_log_event(
+                "CLASSIFICATION",
+                detail=(f"face={face_id} risk={result.risk_level} vote={len(votes)} "
+                        f"trigger={'manual' if was_recheck else 'auto'}"),
+                peak_confidence=result.p_fake_raw, api_response_ms=result.api_response_ms,
+            )
+            self.api_response_update.emit(result.api_response_ms)
+
+            if not decided:
+                # The face is still at the back of _pending_faces, so its next
+                # round-robin turn submits a fresh frame for another verdict.
+                continue
+
+            # The median sits on the majority side of FAKE_THRESHOLD, so the
+            # displayed score always agrees with the vote.
+            p_fake = statistics.median(votes)
+            result = replace(
+                result, p_fake_raw=p_fake, risk_level=risk_level_for(p_fake),
+                thumbnail=resized_bgr,  # exact crop that was analyzed, for Mini mode display
+            )
             if result.risk_level == "DEEPFAKE" and config.EXPLANATION_ENABLED:
                 result.explanation = analyze_artifacts(resized_bgr)
 
             with self._result_lock:
                 self._cached_results[face_id] = result
             with self._pending_lock:
-                was_recheck = face_id in self._recheck_ids
                 self._locked_ids.add(face_id)
                 self._recheck_ids.discard(face_id)
                 # Without this, the entry the pop-and-reinsert above put back
@@ -453,16 +504,6 @@ class DetectionWorker(QThread):
                 # even though the face is now locked — the lock only stops
                 # NEW insertions, it never removes one already queued.
                 self._pending_faces.pop(face_id, None)
-
-            # Logged for every classification, not just alerts, so the raw
-            # P_fake distribution can support future FAKE_THRESHOLD recalibration.
-            db_log_event(
-                "CLASSIFICATION",
-                detail=f"face={face_id} risk={result.risk_level} trigger={'manual' if was_recheck else 'auto'}",
-                peak_confidence=result.p_fake_raw, api_response_ms=result.api_response_ms,
-            )
-
-            self.api_response_update.emit(result.api_response_ms)
 
     def _report_api_failure(self, error: Exception, was_degraded: bool, consecutive_failures: int) -> bool:
         """Emit/log a Degraded transition once BITMIND_DEGRADED_FAILURE_THRESHOLD consecutive failures are reached."""
@@ -479,11 +520,18 @@ class DetectionWorker(QThread):
             self.degraded_mode.emit(False)
         return False
 
+    def _sleep_while_running(self, seconds: float):
+        """Sleep for up to seconds, returning early once stop() is called."""
+        deadline = time.perf_counter() + seconds
+        while self._running and time.perf_counter() < deadline:
+            time.sleep(0.1)
+
     def request_recheck(self, face_id: str):
-        """Clear a locked face's lock so it runs one more classification cycle."""
+        """Clear a locked face's lock so it runs one more classification cycle, with a fresh vote."""
         with self._pending_lock:
             self._locked_ids.discard(face_id)
             self._recheck_ids.add(face_id)
+            self._votes.pop(face_id, None)
 
     def set_exclusion_region(self, rect: tuple | None):
         """Set a screen region (x, y, w, h) in physical pixels to blank before detection."""

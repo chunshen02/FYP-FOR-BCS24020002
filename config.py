@@ -9,8 +9,9 @@ MODEL_NAME = "bitmind_api"
 BITMIND_API_ENDPOINT = "https://api.bitmind.ai/detect-image"
 BITMIND_API_TIMEOUT_SEC = 10          # HTTP request timeout in seconds
 BITMIND_RATE_LIMIT_DELAY_SEC = 1.0    # Minimum seconds between API calls (1 req/sec free tier)
-BITMIND_RETRY_DELAYS_SEC = [1.0, 2.0, 4.0]   # Exponential backoff for transient (timeout/conn/5xx) failures
-BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive failures before Degraded status; auth errors bypass this
+BITMIND_RATE_LIMIT_BACKOFF_SEC = 5.0       # First pause after HTTP 429 when no Retry-After header; doubles per repeat
+BITMIND_RATE_LIMIT_BACKOFF_MAX_SEC = 60.0  # Upper bound for the HTTP 429 pause
+BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive transient failures before Degraded status
 
 # ── Face Detection ─────────────────────────────────────────────────────────────
 FACE_CONFIDENCE_THRESHOLD = 0.3       # MediaPipe BlazeFace detection confidence. Raised from 0.2: on FF++
@@ -28,16 +29,9 @@ DETECTION_MAX_WIDTH = 1280            # Wider frames are downscaled before detec
 DETECTION_TILE_GRID = 2              # N x N overlapping tiles per frame; 1 disables tiling
 DETECTION_TILE_OVERLAP = 0.25         # Each tile extends this fraction past its grid cell
 DETECTION_DUPLICATE_OVERLAP = 0.5     # Intersection / smaller-box area above which two detections are one face
-MAX_FACES = 3                         # Analyze at most this many faces per frame (most confident first)
-                                       # Faces beyond this limit (least confident first) are silently
-                                       # dropped every tick, before ever reaching the classification
-                                       # queue -- not delayed, not queued, not logged. A meeting with
-                                       # more than MAX_FACES participants on screen will never have
-                                       # the overflow faces analyzed at all for as long as they stay
-                                       # less confident than the top MAX_FACES. Known limitation, not yet
-                                       # addressed; raising this value or handling overflow more
-                                       # gracefully (e.g. rotating which faces are prioritized) is a
-                                       # separate future change.
+MAX_PENDING_FACES = 3                 # Faces awaiting a BitMind verdict at once (most confident first). Every
+                                       # detected face is tracked and drawn; a classified face frees its slot
+                                       # for the next one, so crowded meetings are worked through in turn.
 
 # ── Multi-Face Tracking ────────────────────────────────────────────────────────
 FACE_TRACK_MAX_DIST_PX = 50           # Centroid-distance fallback threshold (pixels) for matching
@@ -50,32 +44,27 @@ FACE_CROP_SIZE = 224                  # Resize face crop to this square size bef
 
 # ── Inference & Scoring ────────────────────────────────────────────────────────
 # FAKE_THRESHOLD was calibrated in FYP1 on a small sample (n=3 deepfake, n=10
-# real) — see PERFORMANCE_RESULTS.txt Table 4/5. Every classification is now
-# logged with its raw P_fake score (see database.get_score_distribution) so
+# real). Every classification is now
+# logged with its raw P_fake score (CLASSIFICATION events in session_log.db) so
 # this can be recalibrated against a larger, more diverse sample in FYP2.
-FAKE_THRESHOLD = 0.70                 # P_fake >= 0.70 → DEEPFAKE; below → REAL
+FAKE_THRESHOLD = 0.70                 # P_fake >= 0.70 → DEEPFAKE; below → REAL (adjustable in Settings)
+# A single BitMind verdict is noisy, and a cached result repeats every frame,
+# so frame-based alert debouncing alone would let one misjudged call raise an
+# alert. A first REAL verdict is final (one call); a first DEEPFAKE verdict is
+# re-checked on fresh frames until CONFIRM_FAKE_VOTES of CONFIRM_VERDICTS agree
+# either way. The face's final score is the median of its verdicts.
+CONFIRM_VERDICTS = 3
+CONFIRM_FAKE_VOTES = 2
 
 # ── Alert Rules ────────────────────────────────────────────────────────────────
 ALERT_TRIGGER_FRAMES = 3              # Consecutive RED frames required to trigger alert
 ALERT_DISMISS_FRAMES = 8              # Consecutive non-RED frames required to dismiss alert
+ALERT_SOUND_ENABLED = True            # Beep on alert (adjustable in Settings)
+ALERT_NOTIFICATION_ENABLED = True     # Desktop toast on alert (adjustable in Settings)
+ALERT_AUTO_SCREENSHOT = True          # Save a full-screen evidence PNG on alert (adjustable in Settings)
 
 # ── Display / Loop Rate ────────────────────────────────────────────────────────
 DISPLAY_FPS = 15                      # Detection loop tick rate (frames/sec)
-
-# ── Performance Targets ────────────────────────────────────────────────────────
-TARGET_FPS = 10                       # Minimum acceptable throughput (frames/sec)
-TARGET_LATENCY_MS = 100               # Maximum per-frame latency of the capture/detection loop (ms)
-TARGET_DETECTION_LATENCY_MS = 5000    # Maximum mean time from screen capture to BitMind verdict (ms)
-TARGET_CPU_PERCENT = 70               # Maximum CPU utilisation (%)
-TARGET_RAM_MB = 800                   # Maximum peak RAM usage (MB)
-
-# ── Benchmark Settings ─────────────────────────────────────────────────────────
-BENCHMARK_WARMUP_SECONDS = 30
-BENCHMARK_MEASURE_SECONDS = 60
-BENCHMARK_REPEAT = 3
-
-# ── Offline Batch Evaluation (evaluation_runner.py) ─────────────────────────────
-EVAL_FRAMES_PER_VIDEO = 5             # Frames sampled per video clip during batch evaluation
 
 # ── Low-Light Handling ────────────────────────────────────────────────────────
 LOW_LIGHT_THRESHOLD = 40              # Frame mean brightness (0-255) below which low-light mode activates

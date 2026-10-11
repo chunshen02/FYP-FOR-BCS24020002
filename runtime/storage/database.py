@@ -24,34 +24,27 @@ CREATE TABLE IF NOT EXISTS session_events (
     breach_duration_sec REAL,
     faces_detected      INTEGER,
     api_response_ms     REAL,
-    api_request_id      TEXT,
-    ground_truth_label  TEXT
+    api_request_id      TEXT
 );
 """
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Add columns to an on-disk DB that predates the current schema (non-destructive)."""
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(session_events)")}
-    if "ground_truth_label" not in cols:
-        conn.execute("ALTER TABLE session_events ADD COLUMN ground_truth_label TEXT")
-        conn.commit()
-
-
-# Keyed by path rather than a single flag because tests repoint config.DB_PATH per test.
-_schema_ready: set = set()
+SESSION_EXPORT_FIELDS = ["timestamp", "event_type", "detail", "peak_confidence", "api_response_ms"]
 
 
 def _get_connection() -> sqlite3.Connection:
-    if config.DB_PATH in _schema_ready:
-        return sqlite3.connect(config.DB_PATH)
-    os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     conn = sqlite3.connect(config.DB_PATH)
     conn.execute(CREATE_TABLE_SQL)
-    conn.commit()
-    _ensure_schema(conn)
-    _schema_ready.add(config.DB_PATH)
     return conn
+
+
+def is_available() -> bool:
+    """Whether the session database can be opened."""
+    try:
+        _get_connection().close()
+        return True
+    except sqlite3.Error:
+        return False
 
 
 def log_event(
@@ -62,7 +55,6 @@ def log_event(
     faces_detected: int = None,
     api_response_ms: float = None,
     api_request_id: str = None,
-    ground_truth_label: str = None,
 ) -> int | None:
     """
     Insert a session event record into the local SQLite database.
@@ -75,8 +67,6 @@ def log_event(
         faces_detected:      Number of faces detected at time of event (optional).
         api_response_ms:     BitMind API round-trip response time in ms (optional).
         api_request_id:      BitMind API request identifier (optional).
-        ground_truth_label:  'REAL' or 'DEEPFAKE' — only populated during offline
-                              evaluation runs (see evaluation_runner.py), never for live sessions.
 
     Returns:
         The new row's id, or None if the write failed.
@@ -85,15 +75,15 @@ def log_event(
     sql = """
         INSERT INTO session_events
             (timestamp, event_type, detail, peak_confidence,
-             breach_duration_sec, faces_detected, api_response_ms, api_request_id, ground_truth_label)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             breach_duration_sec, faces_detected, api_response_ms, api_request_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """
     try:
         conn = _get_connection()
         cursor = conn.execute(sql, (
             timestamp, event_type, detail,
             peak_confidence, breach_duration_sec, faces_detected,
-            api_response_ms, api_request_id, ground_truth_label
+            api_response_ms, api_request_id
         ))
         conn.commit()
         conn.close()
@@ -101,40 +91,6 @@ def log_event(
     except sqlite3.Error as e:
         print(f"[WARNING] Database write failed: {e}")
         return None
-
-
-def get_session_history(limit: int = 100) -> list:
-    """
-    Retrieve the most recent session events.
-
-    Args:
-        limit: Maximum number of records to return (default: 100).
-
-    Returns:
-        List of dicts with keys: id, timestamp, event_type, detail,
-        peak_confidence, breach_duration_sec, faces_detected, api_response_ms,
-        api_request_id, ground_truth_label.
-    """
-    sql = """
-        SELECT id, timestamp, event_type, detail,
-               peak_confidence, breach_duration_sec, faces_detected,
-               api_response_ms, api_request_id, ground_truth_label
-        FROM session_events
-        ORDER BY id DESC
-        LIMIT ?
-    """
-    try:
-        conn = _get_connection()
-        cursor = conn.execute(sql, (limit,))
-        rows = cursor.fetchall()
-        conn.close()
-        keys = ["id", "timestamp", "event_type", "detail",
-                "peak_confidence", "breach_duration_sec", "faces_detected",
-                "api_response_ms", "api_request_id", "ground_truth_label"]
-        return [dict(zip(keys, row)) for row in rows]
-    except sqlite3.Error as e:
-        print(f"[WARNING] Database read failed: {e}")
-        return []
 
 
 def _find_session_id_range(conn: sqlite3.Connection, started_at: str) -> tuple | None:
@@ -178,6 +134,26 @@ def delete_session(started_at: str) -> None:
         conn.close()
     except sqlite3.Error as e:
         print(f"[WARNING] Database delete failed: {e}")
+
+
+def get_session_events(started_at: str) -> list:
+    """Return the events of the session that started at started_at, oldest first, keyed by SESSION_EXPORT_FIELDS."""
+    try:
+        conn = _get_connection()
+        id_range = _find_session_id_range(conn, started_at)
+        if id_range is None:
+            conn.close()
+            return []
+        start_id, stop_id = id_range
+        where, params = ("id BETWEEN ? AND ?", id_range) if stop_id is not None else ("id >= ?", (start_id,))
+        rows = conn.execute(
+            f"SELECT {', '.join(SESSION_EXPORT_FIELDS)} FROM session_events WHERE {where} ORDER BY id", params
+        ).fetchall()
+        conn.close()
+        return [dict(zip(SESSION_EXPORT_FIELDS, row)) for row in rows]
+    except sqlite3.Error as e:
+        print(f"[WARNING] Database read failed: {e}")
+        return []
 
 
 def delete_events_from(event_id: int) -> None:
@@ -317,126 +293,3 @@ def get_all_sessions(limit: int = 100) -> list:
     except sqlite3.Error as e:
         print(f"[WARNING] Database read failed: {e}")
         return []
-
-
-def get_score_distribution(session_ids: list = None) -> dict:
-    """
-    Retrieve raw P_fake scores from CLASSIFICATION events, grouped by session.
-
-    Args:
-        session_ids: list of session 'started_at' timestamps (same identifier
-            used by delete_session) to include; all sessions if None.
-
-    Returns:
-        Dict of {started_at: [raw P_fake scores]}, for offline threshold
-        analysis (e.g. exporting to CSV for an ROC curve).
-    """
-    try:
-        conn = _get_connection()
-
-        if session_ids is None:
-            cursor = conn.execute(
-                "SELECT timestamp FROM session_events "
-                "WHERE event_type='SESSION' AND detail LIKE '%Detection started%' "
-                "ORDER BY id ASC"
-            )
-            session_ids = [row[0] for row in cursor.fetchall()]
-
-        distribution = {}
-        for started_at in session_ids:
-            id_range = _find_session_id_range(conn, started_at)
-            if id_range is None:
-                continue
-            start_id, stop_id = id_range
-            if stop_id is not None:
-                cursor = conn.execute(
-                    "SELECT peak_confidence FROM session_events "
-                    "WHERE event_type='CLASSIFICATION' AND id BETWEEN ? AND ? "
-                    "AND peak_confidence IS NOT NULL",
-                    (start_id, stop_id)
-                )
-            else:
-                cursor = conn.execute(
-                    "SELECT peak_confidence FROM session_events "
-                    "WHERE event_type='CLASSIFICATION' AND id >= ? "
-                    "AND peak_confidence IS NOT NULL",
-                    (start_id,)
-                )
-            distribution[started_at] = [row[0] for row in cursor.fetchall()]
-
-        conn.close()
-        return distribution
-
-    except sqlite3.Error as e:
-        print(f"[WARNING] Database read failed: {e}")
-        return {}
-
-
-def compute_classification_metrics(session_ids: list = None) -> dict:
-    """
-    Compare CLASSIFICATION predictions (peak_confidence >= FAKE_THRESHOLD)
-    against ground_truth_label within the given sessions. Only rows with a
-    ground_truth_label are considered — this is only meaningful for sessions
-    produced by an offline evaluation run (see evaluation_runner.py), since
-    live sessions never populate ground truth.
-
-    Args:
-        session_ids: list of session 'started_at' timestamps (same identifier
-            used by delete_session/get_score_distribution) to include; all
-            sessions with labelled rows if None.
-
-    Returns:
-        Dict with keys: tp, fp, tn, fn, precision, recall, f1, n.
-        DEEPFAKE is the positive class. Precision/recall/f1 default to 0.0
-        when their denominator is zero.
-    """
-    empty = {"tp": 0, "fp": 0, "tn": 0, "fn": 0, "precision": 0.0, "recall": 0.0, "f1": 0.0, "n": 0}
-    try:
-        conn = _get_connection()
-
-        if session_ids is None:
-            cursor = conn.execute(
-                "SELECT DISTINCT timestamp FROM session_events "
-                "WHERE event_type='SESSION' AND detail LIKE '%Detection started%' "
-                "ORDER BY timestamp ASC"
-            )
-            session_ids = [row[0] for row in cursor.fetchall()]
-
-        tp = fp = tn = fn = 0
-        for started_at in session_ids:
-            id_range = _find_session_id_range(conn, started_at)
-            if id_range is None:
-                continue
-            start_id, stop_id = id_range
-            where_id = "id BETWEEN ? AND ?" if stop_id is not None else "id >= ?"
-            params = (start_id, stop_id) if stop_id is not None else (start_id,)
-            cursor = conn.execute(
-                "SELECT peak_confidence, ground_truth_label FROM session_events "
-                f"WHERE event_type='CLASSIFICATION' AND {where_id} "
-                "AND peak_confidence IS NOT NULL AND ground_truth_label IS NOT NULL",
-                params
-            )
-            for peak_confidence, ground_truth in cursor.fetchall():
-                predicted_fake = peak_confidence >= config.FAKE_THRESHOLD
-                actual_fake = ground_truth == "DEEPFAKE"
-                if predicted_fake and actual_fake:
-                    tp += 1
-                elif predicted_fake and not actual_fake:
-                    fp += 1
-                elif not predicted_fake and not actual_fake:
-                    tn += 1
-                else:
-                    fn += 1
-
-        conn.close()
-
-        n = tp + fp + tn + fn
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
-
-        return {"tp": tp, "fp": fp, "tn": tn, "fn": fn, "precision": precision, "recall": recall, "f1": f1, "n": n}
-
-    except sqlite3.Error as e:
-        print(f"[WARNING] Database read failed: {e}")
-        return empty

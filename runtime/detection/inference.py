@@ -36,11 +36,15 @@ class BitmindAuthError(BitmindAPIError):
 
 
 class BitmindRateLimitError(BitmindAPIError):
-    """Rate limit exceeded (HTTP 429) — distinct from a transient failure, not retried inline."""
+    """Rate limit exceeded (HTTP 429); retry_after is the server's requested pause in seconds, if given."""
+
+    def __init__(self, message: str, retry_after: float | None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class BitmindTransientError(BitmindAPIError):
-    """Timeout, connection error, or server error (5xx) — retried with backoff."""
+    """Timeout, connection error, or server error (5xx)."""
 
 
 @dataclass
@@ -56,7 +60,8 @@ class FaceResult:
     face_id: str = ""        # tracker-assigned id — lets the GUI target a manual re-check at the right face
 
 
-def _get_risk_level(p_fake: float) -> str:
+def risk_level_for(p_fake: float) -> str:
+    """Map a P_fake score to "DEEPFAKE" or "REAL" using the current FAKE_THRESHOLD."""
     return "DEEPFAKE" if p_fake >= config.FAKE_THRESHOLD else "REAL"
 
 
@@ -75,31 +80,12 @@ class DeepfakeInferenceEngine:
         self._session.headers.update({"Authorization": f"Bearer {self._api_key}"})
         self._last_call_time: float = 0.0
 
-    def run_single(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
-        """
-        Submit one face crop to the BitMind API, retrying transient failures
-        internally until success or final give-up. Raises BitmindAPIError on
-        failure. Used by offline batch evaluation, which processes samples
-        sequentially with no round-robin queue to block.
-        """
-        p_fake_raw, api_ms = self._call_api(jpeg_bytes)
-        return self._to_result(p_fake_raw, api_ms, bbox, face_id)
-
     def run_single_attempt(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
-        """
-        Submit one face crop with exactly one HTTP attempt — no internal
-        retry loop. Used by the live round-robin pipeline so a failing face
-        yields its turn instead of blocking the queue through a multi-attempt
-        backoff; the caller re-queues on failure. Raises BitmindAPIError on
-        failure.
-        """
+        """Submit one face crop with a single HTTP attempt; raises BitmindAPIError on failure."""
         p_fake_raw, api_ms = self._post_once(jpeg_bytes)
-        return self._to_result(p_fake_raw, api_ms, bbox, face_id)
-
-    def _to_result(self, p_fake_raw: float, api_ms: float, bbox: dict, face_id: str) -> "FaceResult":
         return FaceResult(
             p_fake_raw=p_fake_raw,
-            risk_level=_get_risk_level(p_fake_raw),
+            risk_level=risk_level_for(p_fake_raw),
             api_response_ms=api_ms,
             bbox=bbox,
             last_updated=time.perf_counter(),
@@ -160,30 +146,12 @@ class DeepfakeInferenceEngine:
         if response.status_code in (401, 403):
             raise BitmindAuthError(f"Authentication failed (HTTP {response.status_code}): {response.text}")
         if response.status_code == 429:
-            raise BitmindRateLimitError(f"Rate limit exceeded (HTTP 429): {response.text}")
+            retry_after = response.headers.get("Retry-After", "")
+            raise BitmindRateLimitError(f"Rate limit exceeded (HTTP 429): {response.text}",
+                                        float(retry_after) if retry_after.isdigit() else None)
         if response.status_code >= 500:
             raise BitmindTransientError(f"Server error (HTTP {response.status_code}): {response.text}")
         raise BitmindAPIError(f"Unexpected HTTP {response.status_code}: {response.text}")
-
-    def _call_api(self, jpeg_bytes: bytes) -> tuple:
-        """
-        Submit one JPEG image to the BitMind API, retrying only transient
-        failures (timeout, connection error, 5xx) with exponential backoff.
-        Auth (401/403) and rate-limit (429) failures propagate immediately.
-
-        Returns:
-            (p_fake_raw: float, api_response_ms: float)
-        """
-        delays = [0.0] + config.BITMIND_RETRY_DELAYS_SEC
-        last_error = None
-        for delay in delays:
-            if delay:
-                time.sleep(delay)
-            try:
-                return self._post_once(jpeg_bytes)
-            except BitmindTransientError as e:
-                last_error = e
-        raise last_error
 
     def close(self):
         """Close the underlying HTTP session."""
