@@ -65,6 +65,14 @@ def risk_level_for(p_fake: float) -> str:
     return "DEEPFAKE" if p_fake >= config.FAKE_THRESHOLD else "REAL"
 
 
+def verdict_decided(votes: list) -> bool:
+    """Whether a face's P_fake verdicts settle it (see CONFIRM_VERDICTS in config.py)."""
+    fakes = sum(p >= config.FAKE_THRESHOLD for p in votes)
+    reals = len(votes) - fakes
+    return (fakes == 0 or fakes >= config.CONFIRM_FAKE_VOTES
+            or reals > config.CONFIRM_VERDICTS - config.CONFIRM_FAKE_VOTES)
+
+
 class DeepfakeInferenceEngine:
     """Submits face crop images to the BitMind API for deepfake classification."""
 

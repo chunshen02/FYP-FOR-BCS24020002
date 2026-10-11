@@ -30,21 +30,14 @@ from runtime.capture import window_affinity
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
 from runtime.detection.inference import (
-    DeepfakeInferenceEngine, BitmindAPIError, BitmindAuthError, BitmindRateLimitError, risk_level_for,
+    DeepfakeInferenceEngine, BitmindAPIError, BitmindAuthError, BitmindRateLimitError,
+    risk_level_for, verdict_decided,
 )
 from runtime.detection.explainer import analyze_artifacts
 from runtime.storage.database import log_event as db_log_event
 import config
 
 _FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
-
-
-def _verdict_decided(votes: list) -> bool:
-    """Whether a face's P_fake verdicts settle it (see CONFIRM_VERDICTS in config.py)."""
-    fakes = sum(p >= config.FAKE_THRESHOLD for p in votes)
-    reals = len(votes) - fakes
-    return (fakes == 0 or fakes >= config.CONFIRM_FAKE_VOTES
-            or reals > config.CONFIRM_VERDICTS - config.CONFIRM_FAKE_VOTES)
 
 
 def _centroid(box: dict) -> tuple:
@@ -216,7 +209,7 @@ class DetectionWorker(QThread):
         # instead of "Analyzing..." for a face that already has a result.
         self._locked_ids: set = set()
         self._recheck_ids: set = set()
-        self._votes: dict = {}   # face_id -> P_fake verdicts so far, until _verdict_decided; guarded by _pending_lock
+        self._votes: dict = {}   # face_id -> P_fake verdicts so far, until verdict_decided; guarded by _pending_lock
         self._inflight_lock = threading.Lock()
         self._inflight_id: str | None = None   # face currently mid-HTTP-call, protected from track eviction
         self._excl_lock = threading.Lock()
@@ -465,7 +458,7 @@ class DetectionWorker(QThread):
                 was_recheck = face_id in self._recheck_ids
                 votes = self._votes.setdefault(face_id, [])
                 votes.append(result.p_fake_raw)
-                decided = _verdict_decided(votes)
+                decided = verdict_decided(votes)
                 if decided:
                     del self._votes[face_id]
 

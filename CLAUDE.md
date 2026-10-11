@@ -47,6 +47,7 @@ Before reporting any task as complete:
 | HTTP client      | requests              | 2.32.3        |
 | Env vars         | python-dotenv         | 1.1.0         |
 | Numerics         | numpy                 | 2.2.5         |
+| Process metrics  | psutil (perf test)    | (unpinned)    |
 | Notifications    | plyer                 | (unpinned)    |
 | Detection API    | BitMind Oracle API    | v1            |
 | Local storage    | SQLite (stdlib)       | built-in      |
@@ -76,6 +77,8 @@ runtime/
     alert_system.py              # Taskbar flash / beep / desktop notification on alert
   storage/
     database.py                  # SQLite read/write for session event log
+detection_accuracy.py            # Test: BitMind accuracy on FaceForensics++ (resumable CSV)
+realtime_performance.py          # Test: FPS / latency / CPU / RAM on FaceForensics++ clips
 ```
 
 ## Key Configuration (config.py)

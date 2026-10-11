@@ -356,6 +356,42 @@ functions:
   - clear_history(): deletes all records (used by the "Clear All"
     control).
 
+----------------------------------------------------------------
+19. detection_accuracy.py
+----------------------------------------------------------------
+Test script measuring detection accuracy on FaceForensics++ (c23):
+the first ACCURACY_VIDEOS_PER_SUBSET videos of original (real) and
+of the five manipulation methods in FF_FAKE_SUBSETS. Each video is
+classified with the app's own pipeline and confirmation rule:
+frames at the middles of CONFIRM_VERDICTS equal segments, the most
+confident face cropped and sent to BitMind, a first REAL verdict
+final, otherwise more verdicts until verdict_decided(). Each video's
+verdicts are appended to results/accuracy_results.csv as soon as it
+finishes, so an interrupted run resumes. The summary (also written
+to results/accuracy_summary.txt) compares a single verdict with the
+confirmed verdict (confusion counts, accuracy, balanced accuracy,
+precision, recall, F1, false-positive rate), lists per-method
+results with ROC-AUC, and sweeps thresholds 0.5-0.9.
+--summary-only re-prints it from the CSV without API calls.
+
+----------------------------------------------------------------
+20. realtime_performance.py
+----------------------------------------------------------------
+Test script measuring real-time performance. It plays
+PERF_VIDEOS_PER_SUBSET FaceForensics++ clips per subset in real
+time, letterboxed to the primary screen's resolution with a short
+black gap between clips, through a copy of DetectionWorker's
+architecture: a main loop at DISPLAY_FPS (a real screen grab every
+tick for its cost, face detection on the clip frame, tracking and
+queueing) and a round-robin BitMind thread with the same
+confirmation rule. After a PERF_WARMUP_SECONDS warm-up it records
+per-tick latency split by stage, FPS, the app process's CPU (the
+simulated player's decoding excluded) and RAM, and per clip the
+time from a face first being tracked to its first and final
+verdict. Results are compared with the TARGET_* values in config.py
+(PASS/FAIL) and saved to results/performance_summary_<time>.txt,
+with per-clip rows in results/performance_videos_<time>.csv.
+
 ================================================================
   END OF FILE DESCRIPTIONS
 ================================================================
