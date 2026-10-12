@@ -392,6 +392,31 @@ verdict. Results are compared with the TARGET_* values in config.py
 (PASS/FAIL) and saved to results/performance_summary_<time>.txt,
 with per-clip rows in results/performance_videos_<time>.csv.
 
+----------------------------------------------------------------
+21. screen_face_pipeline.py
+----------------------------------------------------------------
+Test script for the screen capture -> face crop -> face tracking
+workflow, up to the JPEG the app submits to BitMind. BitMind is not
+called (API speed and accuracy are covered by realtime_performance.py
+and detection_accuracy.py), so no API key or network is needed. A
+separate player process (standing in for the video-call app) shows
+PIPELINE_VIDEOS_PER_SUBSET FaceForensics++ clips per subset full
+screen on the primary monitor, with black gaps between clips, and
+publishes which clip is on screen and when it appeared. The pipeline
+grabs the real screen with mss at DISPLAY_FPS, runs MediaPipe
+detection and cropping on the grab, tracks the faces, and prepares
+every face's 224x224 JPEG payload (an upper bound: the app prepares
+one per second). After a PERF_WARMUP_SECONDS warm-up it reports FPS,
+screen-grab, detect + crop, tracking and payload-preparation times,
+JPEG size, the face hit rate on clip frames, false detections on
+black gap frames, main-face track continuity, frame latency (grab ->
+payloads ready) and the time from a face appearing on screen to its
+first payload, compared with the TARGET_* values in config.py
+(PASS/FAIL). Results are saved to results/pipeline_summary_<time>.txt,
+per-clip rows to results/pipeline_clips_<time>.csv, and the first
+JPEG of each face track to results/pipeline_crops_<time>/. Esc in the
+video window stops the run early.
+
 ================================================================
   END OF FILE DESCRIPTIONS
 ================================================================

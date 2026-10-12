@@ -79,6 +79,7 @@ runtime/
     database.py                  # SQLite read/write for session event log
 detection_accuracy.py            # Test: BitMind accuracy on FaceForensics++ (resumable CSV)
 realtime_performance.py          # Test: FPS / latency / CPU / RAM on FaceForensics++ clips
+screen_face_pipeline.py          # Test: real screen grab -> face crop/tracking -> BitMind-ready JPEG (no API calls), FF++ full screen
 ```
 
 ## Key Configuration (config.py)

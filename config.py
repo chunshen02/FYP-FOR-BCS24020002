@@ -82,7 +82,7 @@ EXPLAIN_FFT_HF_RATIO_THRESHOLD = 0.0004  # High/low FFT energy ratio above which
 EXPLAIN_NOISE_RATIO_THRESHOLD = 2.6      # Inner/border noise-residual variance ratio above which blending is flagged
 EXPLAIN_ASYMMETRY_THRESHOLD = 0.20       # Normalized left-right pixel-diff mean above which asymmetry is flagged
 
-# ── Evaluation Scripts (detection_accuracy.py / realtime_performance.py) ───────
+# ── Evaluation Scripts (detection_accuracy.py / realtime_performance.py / screen_face_pipeline.py) ──
 FF_DATASET_ROOT = os.path.normpath(os.path.join(BASE_DIR, "..", "..", "archive", "FaceForensics++_C23"))
 FF_REAL_SUBSET = "original"
 # Each fake "<target>_<source>.mp4" is built from original/<target>.mp4, so the
@@ -91,9 +91,12 @@ FF_FAKE_SUBSETS = ["Deepfakes", "Face2Face", "FaceSwap", "FaceShifter", "NeuralT
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
 ACCURACY_VIDEOS_PER_SUBSET = 100      # First N videos (by name) of each subset
 PERF_VIDEOS_PER_SUBSET = 4            # Videos per subset played during the performance test
-PERF_WARMUP_SECONDS = 10              # Excluded from the performance test's loop and resource metrics
+PIPELINE_VIDEOS_PER_SUBSET = 2        # Videos per subset shown full screen during the screen face pipeline test
+PERF_WARMUP_SECONDS = 10              # Excluded from the performance and pipeline tests' metrics
 TARGET_FPS = 10                       # Minimum acceptable main-loop throughput (frames/sec)
 TARGET_FRAME_LATENCY_MS = 100         # Maximum mean per-frame latency of capture + detection + tracking (ms)
 TARGET_DETECTION_LATENCY_MS = 5000    # Maximum mean time from a face appearing to its final verdict (ms)
 TARGET_CPU_PERCENT = 70               # Maximum mean CPU use of the app process (% of all cores)
 TARGET_RAM_MB = 800                   # Maximum peak RAM of the app process (MB)
+TARGET_FACE_HIT_RATE = 0.90           # Minimum share of on-screen clip frames whose screen grab yields a face crop
+TARGET_TRACK_CONTINUITY = 0.95        # Minimum share of a clip's face frames that keep its main face's track ID
