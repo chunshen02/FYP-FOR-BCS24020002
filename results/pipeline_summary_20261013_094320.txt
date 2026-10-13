@@ -1,0 +1,41 @@
+============================================================================
+  SCREEN FACE PIPELINE — FaceForensics++ c23 clips shown full screen
+  Screen 2560x1600. A player process showed 12 clips full screen; the pipeline
+  grabbed the real screen at DISPLAY_FPS=15, detected, cropped and tracked
+  faces on the grab, and turned every face into the JPEG the app submits to
+  BitMind. BitMind is not called: API speed is measured by
+  realtime_performance.py and accuracy by detection_accuracy.py.
+  'On screen' times start when a clip's first frame was drawn (+/- one refresh).
+============================================================================
+  Metric                                          Measured    Target  Status
+  --------------------------------------------------------------------------
+  1. Screen capture (mss)
+  Mean FPS                                        14.8 fps      >=10    PASS
+  Lowest FPS (1 s window)                         13.7 fps      >=10    PASS
+  Mean screen grab                                 37.6 ms                  
+    p95 screen grab                                43.6 ms                  
+  2. Face detection + cropping (MediaPipe + OpenCV, on the grab)
+  Face hit rate (clip frames with a face)           100.0%     >=90%    PASS
+  False detections (black gap frames)                 0.0%        0%    PASS
+  Mean detect + crop                               16.3 ms                  
+    p95 detect + crop                              23.1 ms                  
+  Mean face crop size (shorter side)              477.3 px                  
+  3. Face tracking
+  Main-face track continuity                        100.0%     >=95%    PASS
+  Mean tracks per clip                                16.6                  
+  Mean tracking                                     0.0 ms                  
+  4. BitMind payload preparation (not sent)
+  Mean per face (resize + JPEG)                     1.0 ms                  
+    p95 per face                                    1.9 ms                  
+  Mean JPEG size                                    7.5 KB                  
+  5. Real-time latency
+  Mean frame latency (grab -> payloads ready)      55.8 ms     <=100    PASS
+    p95 frame latency                              66.5 ms                  
+    max frame latency                              90.6 ms                  
+  Mean on screen -> first payload ready            89.8 ms                  
+    p95 on screen -> first payload ready          123.7 ms                  
+  --------------------------------------------------------------------------
+  Frames measured: 3148; payloads prepared: 5871 (every face on
+  every frame — the app prepares only the one it submits per second, so
+  frame latency here is an upper bound).
+============================================================================

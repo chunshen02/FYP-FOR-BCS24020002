@@ -1,0 +1,13 @@
+clip,subset,video,frames,face_hit_rate,tracks,accepted_tracks,track_continuity,mean_crop_px,first_payload_ms,crop_file
+1,original,000.mp4,229,1.0,25,2,1.0,562,77,clip01_original_000_f0.jpg
+2,Deepfakes,000_003.mp4,227,1.0,25,3,1.0,604,99,clip02_Deepfakes_000_003_f26.jpg
+3,Face2Face,000_003.mp4,174,1.0,19,3,1.0,552,112,clip03_Face2Face_000_003_f52.jpg
+4,FaceSwap,000_003.mp4,173,1.0,23,2,1.0,557,117,clip04_FaceSwap_000_003_f71.jpg
+5,FaceShifter,000_003.mp4,230,1.0,29,3,1.0,559,81,clip05_FaceShifter_000_003_f94.jpg
+6,NeuralTextures,000_003.mp4,176,1.0,18,3,1.0,549,67,clip06_NeuralTextures_000_003_f123.jpg
+7,original,001.mp4,270,1.0,22,2,1.0,464,109,clip07_original_001_f141.jpg
+8,Deepfakes,001_870.mp4,267,1.0,29,1,1.0,457,93,clip08_Deepfakes_001_870_f163.jpg
+9,Face2Face,001_870.mp4,352,1.0,28,2,1.0,465,110,clip09_Face2Face_001_870_f192.jpg
+10,FaceSwap,001_870.mp4,269,1.0,20,1,1.0,461,109,clip10_FaceSwap_001_870_f220.jpg
+11,FaceShifter,001_870.mp4,267,1.0,23,1,1.0,482,68,clip11_FaceShifter_001_870_f240.jpg
+12,NeuralTextures,001_870.mp4,270,1.0,26,2,1.0,462,63,clip12_NeuralTextures_001_870_f263.jpg

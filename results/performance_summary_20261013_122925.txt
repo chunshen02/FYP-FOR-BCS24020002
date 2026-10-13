@@ -1,0 +1,30 @@
+======================================================================
+  REAL-TIME PERFORMANCE — FaceForensics++ c23 clips at screen size
+  Screen 2560x1600, main loop capped at DISPLAY_FPS=15; 24 clips.
+  Frame latency = real screen grab + face detection + tracking/queueing per tick.
+  Detection latency = face first tracked -> final verdict (incl. queue wait and confirmation).
+  Per-clip verdicts and latencies are for the clip's main face (the track seen in most frames).
+  App-added = detection latency minus the time inside that face's own BitMind requests.
+======================================================================
+  Metric                                Measured      Target  Status
+  ------------------------------------------------------------------
+  Mean FPS                              14.9 fps        >=10    PASS
+  Lowest FPS (1 s window)               13.9 fps        >=10    PASS
+  Mean frame latency                     51.2 ms       <=100    PASS
+    p95 frame latency                    56.1 ms                    
+    of which screen capture              33.6 ms                    
+    of which face detection              17.5 ms                    
+    of which tracking + queueing          0.1 ms                    
+  Mean detection latency               5617.8 ms     <=15000    PASS
+    of which inside BitMind requests   5239.1 ms                    
+    p95 detection latency              8459.8 ms                    
+    max detection latency             12513.0 ms                    
+    mean time to first verdict         3946.8 ms                    
+  App-added detection latency           378.8 ms      <=3000    PASS
+    p95 app-added latency              1936.3 ms                    
+  Mean CPU (app process, all cores)         6.1%        <=70    PASS
+  Peak RAM (app process)                335.4 MB       <=800    PASS
+  ------------------------------------------------------------------
+  Clips with a verdict: 24/24, correct: 14
+  BitMind calls: 51 (failed 0, rate-limited 0), mean response 3593.1 ms
+======================================================================
