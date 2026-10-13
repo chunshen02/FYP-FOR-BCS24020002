@@ -41,7 +41,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
-from runtime.gui.dialogs import SaveSessionDialog, SettingsDialog, load_saved_settings
+from runtime.gui.dialogs import EvidenceDialog, SaveSessionDialog, SettingsDialog, load_saved_settings
 from runtime.gui.gauge_widget import GaugeWidget
 from runtime.gui.alert_system import notify_alert
 from runtime.capture.window_affinity import (
@@ -193,6 +193,9 @@ class MainWindow(QMainWindow):
         history_title = QLabel("Session History")
         history_title.setStyleSheet("color: #888; font-size: 10px;")
         history_header.addWidget(history_title)
+        history_hint = QLabel("Double-click a session to view its alert screenshots")
+        history_hint.setStyleSheet("color: #555; font-size: 10px;")
+        history_header.addWidget(history_hint)
         history_header.addStretch()
         self._btn_export_session = QPushButton("Export CSV")
         self._btn_export_session.setObjectName("btn_export_session")
@@ -215,6 +218,7 @@ class MainWindow(QMainWindow):
 
         self._history_table = self._build_history_table()
         self._history_table.itemSelectionChanged.connect(self._on_history_selection_changed)
+        self._history_table.cellDoubleClicked.connect(self._on_view_session_evidence)
         history_layout.addWidget(self._history_table)
         root_layout.addWidget(self._history_section, stretch=0)
 
@@ -917,8 +921,10 @@ class MainWindow(QMainWindow):
                     font-weight: 500;
                 """
                 )
-            # Wrap badge in a centered container
+            # Wrap badge in a centered container. It lets clicks through so
+            # selecting or double-clicking the Result cell works like any other cell.
             container = QWidget()
+            container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             layout = QHBoxLayout(container)
             layout.addWidget(badge)
             layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -930,6 +936,21 @@ class MainWindow(QMainWindow):
         selected = self._history_table.currentRow() >= 0
         self._btn_delete_session.setEnabled(selected)
         self._btn_export_session.setEnabled(selected)
+
+    @pyqtSlot(int, int)
+    def _on_view_session_evidence(self, row: int, _column: int):
+        """Show the double-clicked session's alert screenshots, each with the face alerts it records."""
+        started_at = self._history_table.item(row, 0).text()
+        shots = []
+        alert_peaks = []   # ALERT events since the previous screenshot: faces that alerted on the same frame share one
+        for event in get_session_events(started_at):
+            if event["event_type"] == "ALERT":
+                alert_peaks.append(event["peak_confidence"])
+            elif event["event_type"] == "INFO" and event["detail"].startswith(EVIDENCE_EVENT_PREFIX):
+                filename = event["detail"][len(EVIDENCE_EVENT_PREFIX):]
+                shots.append((filename, event["timestamp"], max(alert_peaks, default=None), len(alert_peaks)))
+                alert_peaks = []
+        EvidenceDialog(started_at, shots, parent=self).exec()
 
     @pyqtSlot()
     def _on_export_selected_session(self):
@@ -1176,7 +1197,8 @@ class MainWindow(QMainWindow):
                     restore_capture_exclusion(hwnd, self._capture_affinity_value)
 
         os.makedirs(config.SCREENSHOTS_DIR, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Milliseconds keep two alerts raised within the same second from overwriting one file.
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"{prefix}_{timestamp}.png"
         cv2.imwrite(os.path.join(config.SCREENSHOTS_DIR, filename), shot)
         return filename
@@ -1284,23 +1306,27 @@ class MainWindow(QMainWindow):
         db_log_event("ERROR", detail)
         self._on_stop()
 
-    @pyqtSlot(float, list)
-    def _on_alert_triggered(self, peak_p_fake: float, explanation: list):
+    @pyqtSlot(list, int)
+    def _on_alert_triggered(self, peaks: list, faces_on_screen: int):
         """
-        Handle alert trigger from alert thread — the single source of alerts.
+        Handle alerts from the alert thread — the single source of alerts.
 
-        The log only records a one-line summary — the full reasoning
-        (`explanation`) is surfaced continuously in the Detection Analysis
-        card via _on_frame_ready, not duplicated into the log here.
+        Each newly confirmed deepfake face is its own alert (one ALERT event,
+        so the session's alert count is the number of deepfake faces); faces
+        confirmed on the same frame share one notification and one screenshot,
+        which shows them all. The full reasoning is surfaced in the Detection
+        Analysis card via _on_frame_ready, not duplicated into the log here.
         """
-        self._alert_count += 1
+        self._alert_count += len(peaks)
         self._alert_card.setVisible(True)
         self._current_alert_active = True
         self._set_status("Alert")
-        notify_alert(self, peak_p_fake)
-        detail = f"Deepfake detected — Peak confidence: {peak_p_fake:.1%}"
-        self._session_log_event("ALERT", detail)
-        db_log_event("ALERT", detail, peak_confidence=peak_p_fake)
+        notify_alert(self, peaks[0])
+        on_screen = f"{faces_on_screen} deepfake face{'s' if faces_on_screen > 1 else ''} on screen"
+        for peak in peaks:
+            detail = f"Deepfake detected — Peak confidence: {peak:.1%} ({on_screen})"
+            self._session_log_event("ALERT", detail)
+            db_log_event("ALERT", detail, peak_confidence=peak)
         if config.ALERT_AUTO_SCREENSHOT:
             evidence = f"{EVIDENCE_EVENT_PREFIX}{self._save_screenshot('alert')}"
             self._session_log_event("INFO", evidence)

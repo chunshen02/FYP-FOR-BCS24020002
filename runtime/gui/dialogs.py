@@ -4,6 +4,8 @@ dialogs.py
 Modal dialogs used by the main window, and persistence of user settings.
 """
 
+import os
+
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -14,7 +16,8 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QCheckBox,
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QUrl
+from PyQt6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 
 import config
 
@@ -180,6 +183,108 @@ class SaveSessionDialog(QDialog):
         btn_row.addStretch()
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
+
+
+class EvidenceDialog(QDialog):
+    """Pages through a saved session's alert screenshots, one alert at a time."""
+
+    # Screenshots are full-screen captures; this keeps the dialog on screen
+    # while leaving the image large enough to read the faces in it.
+    _IMAGE_W, _IMAGE_H = 960, 600
+
+    def __init__(self, started_at: str, shots: list, parent=None):
+        """shots: (filename, time, peak P_fake or None, faces that alerted on it) per screenshot, oldest first."""
+        super().__init__(parent)
+        self.setWindowTitle("Alert screenshots")
+        self.setModal(True)
+        self.setStyleSheet(_DIALOG_STYLE)
+        self._shots = shots
+        self._index = 0
+        self._build_ui(started_at)
+        self._show_shot()
+
+    def _build_ui(self, started_at: str):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        title = QLabel(f"Alert screenshots — session of {started_at}")
+        title.setStyleSheet("font-size: 14px; font-weight: 500; color: #ffffff;")
+        layout.addWidget(title)
+        layout.addWidget(_divider())
+
+        self._image = QLabel()
+        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._image.setStyleSheet("background-color: #000000; color: #888888; font-size: 12px;")
+        layout.addWidget(self._image)
+
+        self._caption = QLabel()
+        self._caption.setStyleSheet("font-size: 12px; color: #aaaaaa;")
+        layout.addWidget(self._caption)
+        layout.addWidget(_divider())
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        self._prev_btn = _dialog_button("◀ Previous", _SECONDARY_BUTTON_STYLE)
+        self._prev_btn.clicked.connect(lambda: self._step(-1))
+        self._next_btn = _dialog_button("Next ▶", _SECONDARY_BUTTON_STYLE)
+        self._next_btn.clicked.connect(lambda: self._step(1))
+        self._open_btn = _dialog_button("Open file", _SECONDARY_BUTTON_STYLE)
+        self._open_btn.clicked.connect(self._open_file)
+        close_btn = _dialog_button("Close", _PRIMARY_BUTTON_STYLE)
+        close_btn.clicked.connect(self.accept)
+        close_btn.setDefault(True)
+        for button in (self._prev_btn, self._next_btn):
+            button.setVisible(len(self._shots) > 1)
+            btn_row.addWidget(button)
+        btn_row.addStretch()
+        btn_row.addWidget(self._open_btn)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        # Window-wide shortcuts, so the arrow keys page even while a button has focus.
+        QShortcut(QKeySequence(Qt.Key.Key_Left), self, lambda: self._step(-1))
+        QShortcut(QKeySequence(Qt.Key.Key_Right), self, lambda: self._step(1))
+
+    def _path(self) -> str:
+        return os.path.join(config.SCREENSHOTS_DIR, self._shots[self._index][0])
+
+    def _show_shot(self):
+        if not self._shots:
+            self._image.setFixedSize(self._IMAGE_W, 120)
+            self._image.setText("No alert screenshots were saved for this session.")
+            self._caption.setVisible(False)
+            self._open_btn.setVisible(False)
+            return
+
+        filename, shot_time, peak, new_faces = self._shots[self._index]
+        self._image.setFixedSize(self._IMAGE_W, self._IMAGE_H)
+        pixmap = QPixmap(self._path())
+        if pixmap.isNull():
+            self._image.setPixmap(QPixmap())
+            self._image.setText(f"Screenshot file not found: {filename}")
+        else:
+            self._image.setPixmap(pixmap.scaled(
+                self._IMAGE_W, self._IMAGE_H,
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation,
+            ))
+        self._open_btn.setEnabled(not pixmap.isNull())
+
+        caption = f"Screenshot {self._index + 1} of {len(self._shots)}  ·  {shot_time}"
+        if new_faces > 1:
+            caption += f"  ·  {new_faces} new deepfake faces"
+        if peak is not None:
+            caption += f"  ·  Peak confidence {peak:.1%}"
+        self._caption.setText(caption)
+        self._prev_btn.setEnabled(self._index > 0)
+        self._next_btn.setEnabled(self._index < len(self._shots) - 1)
+
+    def _step(self, delta: int):
+        self._index = max(0, min(self._index + delta, len(self._shots) - 1))
+        self._show_shot()
+
+    def _open_file(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(self._path()))
 
 
 class SettingsDialog(QDialog):

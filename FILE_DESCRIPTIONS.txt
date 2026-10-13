@@ -180,13 +180,15 @@ continuously in the background. Architecture:
 ----------------------------------------------------------------
 A lightweight QThread that monitors the stream of FaceResult
 lists produced by DetectionWorker and manages alert state.
-It counts consecutive DEEPFAKE frames: if ALERT_TRIGGER_FRAMES are
-seen in a row it emits alert_triggered(peak_p_fake, explanation)
-carrying the peak face's confidence and its local CV evidence
-strings; once the alert is active it counts consecutive non-DEEPFAKE
-frames and emits alert_dismissed() after ALERT_DISMISS_FRAMES. This
-hysteresis logic prevents rapid flickering of the alert card in the
-GUI. Incoming result batches are queued non-blocking (frames are
+Alerts are per face: it counts each face's consecutive DEEPFAKE
+frames, and once a face reaches ALERT_TRIGGER_FRAMES it raises that
+face's alert, once per session — even if another face's alert is
+already showing or was acknowledged. Faces that alert on the same
+frame are emitted together as alert_triggered(peaks, faces_on_screen)
+so they share one evidence screenshot while each still gets its own
+ALERT event. Once no face has been DEEPFAKE for ALERT_DISMISS_FRAMES
+frames it emits alert_dismissed(). This hysteresis logic prevents
+rapid flickering of the alert card in the GUI. Incoming result batches are queued non-blocking (frames are
 dropped if the queue is full) to avoid stalling the GUI thread.
 
 ----------------------------------------------------------------
