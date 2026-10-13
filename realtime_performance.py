@@ -365,7 +365,8 @@ def _run_info() -> list:
     commit = _git("rev-parse", "--short", "HEAD")
     if commit is None:
         code = "unknown (not a git checkout)"
-    elif _git("status", "--porcelain", "--untracked-files=no"):
+    # results/ is excluded: changed or deleted test outputs are not a code change.
+    elif _git("status", "--porcelain", "--untracked-files=no", "--", ".", ":(exclude)results"):
         code = f"{commit} + uncommitted changes"
     else:
         code = commit
