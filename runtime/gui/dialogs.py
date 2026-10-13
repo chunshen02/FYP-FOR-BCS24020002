@@ -208,7 +208,7 @@ class SettingsDialog(QDialog):
 
         hint = QLabel(
             "Faces scoring at or above this are flagged DEEPFAKE. Applies to new "
-            "verdicts; use Re-check on a face to re-classify it."
+            "verdicts; use the ↻ button beside a face's verdict to re-classify it."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("font-size: 10px; color: #888888;")

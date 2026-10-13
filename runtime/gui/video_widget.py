@@ -10,11 +10,11 @@ import sys
 import time
 import numpy as np
 import cv2
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QToolTip, QWidget
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
 )
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QRect, pyqtSignal, pyqtSlot
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
@@ -38,11 +38,18 @@ _RECHECK_BUTTON_FG = QColor("#9CA3AF")
 # of overlapping ones (see VideoWidget._place_badge).
 _BADGE_SCALE_TIERS = (1.0, 0.8, 0.65, 0.5)
 
+# The Re-check button is a round icon beside the badge; a full text pill made each
+# badge roughly twice as wide, so crowded galleries overlapped and covered faces.
+# Its size has a floor so it stays clickable when the badge shrinks.
+_RECHECK_DIAMETER = 22
+_RECHECK_MIN_DIAMETER = 18
+_RECHECK_TOOLTIP = "Re-check this face"
 
-def _tiered_fonts(base_pt: int) -> dict:
+
+def _tiered_fonts(base_pt: int, min_pt: int = 6) -> dict:
     fonts = {}
     for scale in _BADGE_SCALE_TIERS:
-        f = QFont("Segoe UI", max(int(round(base_pt * scale)), 6))
+        f = QFont("Segoe UI", max(int(round(base_pt * scale)), min_pt))
         f.setBold(True)
         fonts[scale] = f
     return fonts
@@ -57,8 +64,14 @@ _BADGE_SUB_METRICS = {s: QFontMetrics(f) for s, f in _BADGE_SUB_FONTS.items()}
 _BADGE_FONTS = _tiered_fonts(10)
 _BADGE_METRICS = {s: QFontMetrics(f) for s, f in _BADGE_FONTS.items()}
 
+_RECHECK_ICON_FONTS = _tiered_fonts(11, min_pt=8)
+
 _LIVE_FONT = QFont("Segoe UI", 11)
 _LIVE_FONT.setBold(True)
+
+
+def _recheck_diameter(scale: float) -> int:
+    return max(int(_RECHECK_DIAMETER * scale), _RECHECK_MIN_DIAMETER)
 
 
 def _fit_pixmap(frame_bgr: np.ndarray, max_w: int, max_h: int) -> QPixmap:
@@ -366,7 +379,6 @@ class VideoWidget(QWidget):
         age_str = "just now" if elapsed < 1.0 else f"{elapsed:.0f}s ago"
         pct_text = f"{p_fake_pct:.1f}%"
         sub_text = f"{result.risk_level.upper()}  ·  {age_str}"
-        recheck_label = "↻ Re-check"
 
         # The Re-check button rides along beside the badge, so its footprint
         # must be part of the same collision search -- otherwise the badge
@@ -380,8 +392,7 @@ class VideoWidget(QWidget):
             h = int(46 * scale)
             if not result.face_id:
                 return badge_w, h
-            button_w = _BADGE_METRICS[scale].horizontalAdvance(recheck_label) + int(16 * scale)
-            return badge_w + int(6 * scale) + button_w, h
+            return badge_w + int(4 * scale) + _recheck_diameter(scale), h
 
         combined_rect, scale = self._place_badge(box_rect, measure, placed)
         placed.append(combined_rect)
@@ -415,11 +426,12 @@ class VideoWidget(QWidget):
         )
 
         if result.face_id:
+            diameter = _recheck_diameter(scale)
             button_rect = QRect(
-                rect.right() + int(6 * scale), rect.y(),
-                combined_rect.right() - rect.right() - int(6 * scale), rect.height(),
+                rect.x() + badge_w + int(4 * scale), rect.center().y() - diameter // 2,
+                diameter, diameter,
             )
-            self._draw_recheck_button(painter, button_rect, scale, recheck_label, result.face_id)
+            self._draw_recheck_button(painter, button_rect, scale, result.face_id)
 
     def _draw_placeholder_badge(self, painter: QPainter, bbox: dict, scale_x: float, scale_y: float,
                                  label: str, box_colour: QColor, text_colour: QColor, placed: list):
@@ -441,18 +453,31 @@ class VideoWidget(QWidget):
         painter.setPen(text_colour)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
 
-    def _draw_recheck_button(self, painter: QPainter, rect: QRect, scale: float,
-                              label: str, face_id: str):
-        """Draw the 'Re-check' pill at an already-resolved rect; records its hitbox for mousePressEvent."""
+    def _draw_recheck_button(self, painter: QPainter, rect: QRect, scale: float, face_id: str):
+        """Draw the round Re-check icon at an already-resolved rect; records its hitbox for mousePressEvent."""
         painter.setBrush(QBrush(_RECHECK_BUTTON_BG))
         painter.setPen(QPen(_PENDING_COLOUR, 1))
-        painter.drawRoundedRect(rect, int(10 * scale), int(10 * scale))
+        painter.drawEllipse(rect)
 
-        painter.setFont(_BADGE_FONTS[scale])
+        painter.setFont(_RECHECK_ICON_FONTS[scale])
         painter.setPen(_RECHECK_BUTTON_FG)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "↻")
 
         self._recheck_hitboxes.append((rect, face_id))
+
+    def event(self, event):
+        # The icon has no text, so its tooltip names the action; the widget's own
+        # tooltip cannot be used because the buttons are painted, not child widgets.
+        if event.type() == QEvent.Type.ToolTip:
+            pos = event.pos()
+            rect = next((r for r, _ in self._recheck_hitboxes if r.contains(pos)), None)
+            if rect is None:
+                QToolTip.hideText()
+                event.ignore()
+            else:
+                QToolTip.showText(event.globalPos(), _RECHECK_TOOLTIP, self, rect)
+            return True
+        return super().event(event)
 
     def _toggle_blink(self):
         self._blink_on = not self._blink_on
