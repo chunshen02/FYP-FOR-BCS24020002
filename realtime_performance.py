@@ -34,7 +34,7 @@ _FRAME_INTERVAL = 1.0 / config.DISPLAY_FPS
 # new face instead of inheriting the previous clip's locked verdict.
 GAP_SECONDS = 1.0
 VIDEO_CSV_FIELDS = ["clip", "subset", "video", "label", "verdict", "correct", "calls",
-                    "first_verdict_ms", "final_verdict_ms", "faces_tracked"]
+                    "first_verdict_ms", "final_verdict_ms", "api_time_ms", "app_latency_ms", "faces_tracked"]
 
 
 def _playlist(dataset: str, per_subset: int) -> list:
@@ -150,6 +150,7 @@ def _api_loop(engine: DeepfakeInferenceEngine, state: _Pipeline, stop: threading
             continue
 
         jpeg_bytes, _ = preprocessor.process_with_array(crop)
+        t_call = time.perf_counter()
         try:
             result = engine.run_single_attempt(jpeg_bytes, bbox, face_id)
         except BitmindAuthError as e:
@@ -167,8 +168,10 @@ def _api_loop(engine: DeepfakeInferenceEngine, state: _Pipeline, stop: threading
             state.failures += 1
             continue
         finally:
+            # Failed and rate-limited requests count as BitMind time too: the app did not cause that wait.
             with state.lock:
                 state.inflight = None
+                state.faces[face_id]["api_s"] += time.perf_counter() - t_call
         rate_limit_pause = config.BITMIND_RATE_LIMIT_BACKOFF_SEC
 
         now = time.perf_counter()
@@ -244,7 +247,7 @@ def _run(playlist: list) -> dict:
                 for (crop, bbox), fid in zip(faces, face_ids):
                     if fid not in state.faces:
                         state.faces[fid] = {"clip": clip, "first_seen": t0, "first_verdict": None,
-                                            "final_verdict": None, "verdict": "", "calls": 0}
+                                            "final_verdict": None, "verdict": "", "calls": 0, "api_s": 0.0}
                     if fid in state.locked:
                         continue
                     if fid in state.pending or len(state.pending) < config.MAX_PENDING_FACES:
@@ -302,10 +305,14 @@ def _clip_rows(playlist: list, faces: dict) -> list:
             return f"{(main[key] - main['first_seen']) * 1000:.0f}" if main and main[key] else ""
 
         verdict = main["verdict"] if main else ""
+        decided = bool(main and main["final_verdict"])
         rows.append({
             "clip": clip + 1, "subset": subset, "video": os.path.basename(path), "label": label,
             "verdict": verdict, "correct": verdict == label if verdict else "", "calls": main["calls"] if main else 0,
             "first_verdict_ms": ms("first_verdict"), "final_verdict_ms": ms("final_verdict"),
+            "api_time_ms": f"{main['api_s'] * 1000:.0f}" if decided else "",
+            "app_latency_ms": f"{(main['final_verdict'] - main['first_seen'] - main['api_s']) * 1000:.0f}"
+                              if decided else "",
             "faces_tracked": len(clip_faces),
         })
     return rows
@@ -323,8 +330,10 @@ def _summary_lines(stats: dict, rows: list) -> list:
     stages = stats["stages"]
     final_ms = [float(r["final_verdict_ms"]) for r in rows if r["final_verdict_ms"]]
     first_ms = [float(r["first_verdict_ms"]) for r in rows if r["first_verdict_ms"]]
+    api_time_ms = [float(r["api_time_ms"]) for r in rows if r["api_time_ms"]]
+    app_ms = [float(r["app_latency_ms"]) for r in rows if r["app_latency_ms"]]
     mean_fps, min_fps = _mean(stats["fps"]), min(stats["fps"], default=None)
-    mean_latency, mean_final = _mean(stages["total"]), _mean(final_ms)
+    mean_latency, mean_final, mean_app = _mean(stages["total"]), _mean(final_ms), _mean(app_ms)
     mean_cpu, peak_ram = _mean(stats["cpu"]), max(stats["ram"], default=None)
 
     def fmt(value: float | None, unit: str) -> str:
@@ -345,6 +354,7 @@ def _summary_lines(stats: dict, rows: list) -> list:
         f"{len(rows)} clips.",
         "  Frame latency = real screen grab + face detection + tracking/queueing per tick.",
         "  Detection latency = face first tracked -> final verdict (incl. queue wait and confirmation).",
+        "  App-added = detection latency minus the time inside that face's own BitMind requests.",
         line,
         f"  {'Metric':<34}{'Measured':>12}{'Target':>12}{'Status':>8}",
         "  " + "-" * 66,
@@ -359,9 +369,13 @@ def _summary_lines(stats: dict, rows: list) -> list:
         row("  of which tracking + queueing", _mean(stages["track"]), " ms", "", None),
         row("Mean detection latency", mean_final, " ms", f"<={config.TARGET_DETECTION_LATENCY_MS}",
             meets(mean_final, lambda v: v <= config.TARGET_DETECTION_LATENCY_MS)),
+        row("  of which inside BitMind requests", _mean(api_time_ms), " ms", "", None),
         row("  p95 detection latency", _p95(final_ms), " ms", "", None),
         row("  max detection latency", max(final_ms, default=None), " ms", "", None),
         row("  mean time to first verdict", _mean(first_ms), " ms", "", None),
+        row("App-added detection latency", mean_app, " ms", f"<={config.TARGET_APP_LATENCY_MS}",
+            meets(mean_app, lambda v: v <= config.TARGET_APP_LATENCY_MS)),
+        row("  p95 app-added latency", _p95(app_ms), " ms", "", None),
         row("Mean CPU (app process, all cores)", mean_cpu, "%", f"<={config.TARGET_CPU_PERCENT}",
             meets(mean_cpu, lambda v: v <= config.TARGET_CPU_PERCENT)),
         row("Peak RAM (app process)", peak_ram, " MB", f"<={config.TARGET_RAM_MB}",

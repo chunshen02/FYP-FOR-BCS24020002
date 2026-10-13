@@ -95,7 +95,12 @@ PIPELINE_VIDEOS_PER_SUBSET = 2        # Videos per subset shown full screen duri
 PERF_WARMUP_SECONDS = 10              # Excluded from the performance and pipeline tests' metrics
 TARGET_FPS = 10                       # Minimum acceptable main-loop throughput (frames/sec)
 TARGET_FRAME_LATENCY_MS = 100         # Maximum mean per-frame latency of capture + detection + tracking (ms)
-TARGET_DETECTION_LATENCY_MS = 5000    # Maximum mean time from a face appearing to its final verdict (ms)
+# A DEEPFAKE verdict takes 2-3 sequential BitMind calls (CONFIRM_VERDICTS), and BitMind's response
+# time varies by day (1.8-5.1 s means seen; median 4.1 s over 984 calls on 2026-10-13), so three
+# calls alone take ~12 s. The end-to-end target allows that plus some queueing; the app-added target
+# holds the part the app controls, kept under one median call so a face never waits a whole extra call.
+TARGET_DETECTION_LATENCY_MS = 15000   # Maximum mean time from a face appearing to its final verdict (ms)
+TARGET_APP_LATENCY_MS = 3000          # Maximum mean part of that time spent outside the face's own BitMind requests (ms)
 TARGET_CPU_PERCENT = 70               # Maximum mean CPU use of the app process (% of all cores)
 TARGET_RAM_MB = 800                   # Maximum peak RAM of the app process (MB)
 TARGET_FACE_HIT_RATE = 0.90           # Minimum share of on-screen clip frames whose screen grab yields a face crop
