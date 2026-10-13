@@ -3,6 +3,7 @@ import os
 # ── Paths ──────────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "session_log.db")
+SCREENSHOTS_DIR = os.path.join(BASE_DIR, "screenshots")
 
 # ── BitMind API ────────────────────────────────────────────────────────────────
 MODEL_NAME = "bitmind_api"

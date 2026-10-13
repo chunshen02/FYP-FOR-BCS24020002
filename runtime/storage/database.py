@@ -6,6 +6,7 @@ All data is stored in a single file on the host machine.
 No data is transmitted to external servers.
 """
 
+import contextlib
 import sqlite3
 import os
 from datetime import datetime
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS session_events (
 
 
 SESSION_EXPORT_FIELDS = ["timestamp", "event_type", "detail", "peak_confidence", "api_response_ms"]
+EVIDENCE_EVENT_PREFIX = "Evidence screenshot saved: "
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -117,6 +119,22 @@ def _find_session_id_range(conn: sqlite3.Connection, started_at: str) -> tuple |
     return start_id, (next_id if "Detection stopped" in next_detail else next_id - 1)
 
 
+def _delete_events(conn: sqlite3.Connection, where: str, params: tuple) -> None:
+    """Delete the events matching where, plus the alert screenshots they reference."""
+    # A discarded or deleted session must not leave its evidence screenshots
+    # behind on disk, since they show whatever was on screen during the call.
+    evidence = conn.execute(
+        f"SELECT detail FROM session_events WHERE event_type='INFO' AND detail LIKE ? AND {where}",
+        (EVIDENCE_EVENT_PREFIX + "%", *params),
+    ).fetchall()
+    for (detail,) in evidence:
+        filename = os.path.basename(detail[len(EVIDENCE_EVENT_PREFIX):])
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(config.SCREENSHOTS_DIR, filename))
+    conn.execute(f"DELETE FROM session_events WHERE {where}", params)
+    conn.commit()
+
+
 def delete_session(started_at: str) -> None:
     """Delete all events belonging to the session that started at the given timestamp."""
     try:
@@ -127,10 +145,9 @@ def delete_session(started_at: str) -> None:
             return
         start_id, stop_id = id_range
         if stop_id is not None:
-            conn.execute("DELETE FROM session_events WHERE id BETWEEN ? AND ?", (start_id, stop_id))
+            _delete_events(conn, "id BETWEEN ? AND ?", (start_id, stop_id))
         else:
-            conn.execute("DELETE FROM session_events WHERE id >= ?", (start_id,))
-        conn.commit()
+            _delete_events(conn, "id >= ?", (start_id,))
         conn.close()
     except sqlite3.Error as e:
         print(f"[WARNING] Database delete failed: {e}")
@@ -160,8 +177,7 @@ def delete_events_from(event_id: int) -> None:
     """Delete the event with this id and every later one — used to discard the session it started."""
     try:
         conn = _get_connection()
-        conn.execute("DELETE FROM session_events WHERE id >= ?", (event_id,))
-        conn.commit()
+        _delete_events(conn, "id >= ?", (event_id,))
         conn.close()
     except sqlite3.Error as e:
         print(f"[WARNING] Database delete failed: {e}")
@@ -171,8 +187,7 @@ def clear_history() -> None:
     """Delete all session event records."""
     try:
         conn = _get_connection()
-        conn.execute("DELETE FROM session_events")
-        conn.commit()
+        _delete_events(conn, "1 = 1", ())
         conn.close()
     except sqlite3.Error as e:
         print(f"[WARNING] Database clear failed: {e}")

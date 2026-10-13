@@ -99,7 +99,14 @@ class SaveSessionDialog(QDialog):
         self.setModal(True)
         self.setFixedWidth(320)
         self.setStyleSheet(_DIALOG_STYLE)
+        # Only the Discard button deletes the session: closing the dialog with
+        # the title-bar X or Esc keeps it, so a session with alerts is never lost by accident.
+        self.discarded = False
         self._build_ui(duration, alert_count)
+
+    def _discard(self):
+        self.discarded = True
+        self.reject()
 
     def _build_ui(self, duration: str, alert_count: int):
         layout = QVBoxLayout(self)
@@ -163,7 +170,7 @@ class SaveSessionDialog(QDialog):
         btn_row.setSpacing(8)
 
         discard_btn = _dialog_button("Discard", _SECONDARY_BUTTON_STYLE)
-        discard_btn.clicked.connect(self.reject)
+        discard_btn.clicked.connect(self._discard)
 
         save_btn = _dialog_button("Save", _PRIMARY_BUTTON_STYLE)
         save_btn.clicked.connect(self.accept)

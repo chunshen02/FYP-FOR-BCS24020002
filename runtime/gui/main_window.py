@@ -57,7 +57,7 @@ from runtime.detection.face_detector import FaceDetector
 from runtime.detection.inference import DeepfakeInferenceEngine
 from runtime.storage.database import (
     log_event as db_log_event, get_all_sessions, delete_session, delete_events_from, clear_history,
-    get_session_events, is_available as db_is_available, SESSION_EXPORT_FIELDS,
+    get_session_events, is_available as db_is_available, SESSION_EXPORT_FIELDS, EVIDENCE_EVENT_PREFIX,
 )
 import config
 
@@ -1123,25 +1123,23 @@ class MainWindow(QMainWindow):
 
         # Prompt the user only if a session was actually running
         if was_active:
-            duration_str = self._duration_value.text()
-            alert_count = self._alert_count
+            # Logged before the dialog so the time spent deciding is not
+            # counted in the session's duration in history.
+            self._session_log_event("SESSION", "Detection stopped.")
+            db_log_event("SESSION", "Detection stopped.")
 
             dialog = SaveSessionDialog(
-                duration=duration_str,
-                alert_count=alert_count,
+                duration=self._duration_value.text(),
+                alert_count=self._alert_count,
                 parent=self,
             )
-            result = dialog.exec()
+            dialog.exec()
 
-            if result == QDialog.DialogCode.Accepted:
-                # Save: log the stop event so the session is persisted in history
-                self._session_log_event("SESSION", "Detection stopped.")
-                db_log_event("SESSION", "Detection stopped.")
-                self.refresh_history()
-            elif self._session_start_id is not None:
-                # Discard: delete everything logged since the start event, so
-                # no orphaned start or CLASSIFICATION rows are left behind.
+            if dialog.discarded and self._session_start_id is not None:
+                # Delete everything logged since the start event (the stop event
+                # and evidence screenshots included), so nothing orphaned is left behind.
                 delete_events_from(self._session_start_id)
+            self.refresh_history()
 
         # Return UI to Idle state and reset stats readouts
         self._set_status("Idle")
@@ -1177,11 +1175,10 @@ class MainWindow(QMainWindow):
                 if cleared:
                     restore_capture_exclusion(hwnd, self._capture_affinity_value)
 
-        screenshots_dir = os.path.join(config.BASE_DIR, "screenshots")
-        os.makedirs(screenshots_dir, exist_ok=True)
+        os.makedirs(config.SCREENSHOTS_DIR, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{prefix}_{timestamp}.png"
-        cv2.imwrite(os.path.join(screenshots_dir, filename), shot)
+        cv2.imwrite(os.path.join(config.SCREENSHOTS_DIR, filename), shot)
         return filename
 
     @pyqtSlot()
@@ -1305,7 +1302,7 @@ class MainWindow(QMainWindow):
         self._session_log_event("ALERT", detail)
         db_log_event("ALERT", detail, peak_confidence=peak_p_fake)
         if config.ALERT_AUTO_SCREENSHOT:
-            evidence = f"Evidence screenshot saved: {self._save_screenshot('alert')}"
+            evidence = f"{EVIDENCE_EVENT_PREFIX}{self._save_screenshot('alert')}"
             self._session_log_event("INFO", evidence)
             db_log_event("INFO", evidence)
 
