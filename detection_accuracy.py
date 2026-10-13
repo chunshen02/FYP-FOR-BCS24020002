@@ -16,6 +16,7 @@ import time
 import cv2
 
 import config
+from realtime_performance import _run_info
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
 from runtime.detection.inference import (
@@ -208,6 +209,8 @@ def _summary_lines(rows: list) -> list:
     lines = [
         line,
         "  DETECTION ACCURACY — FaceForensics++ c23",
+        *_run_info(),
+        "  (The results CSV is resumable, so its rows may come from earlier runs on other code.)",
         f"  Threshold {threshold:.0%}. Single = first BitMind verdict only. Confirmed = app rule: a first REAL",
         f"  verdict is final, otherwise {config.CONFIRM_FAKE_VOTES} of {config.CONFIRM_VERDICTS} verdicts "
         f"decide and the score is their median.",

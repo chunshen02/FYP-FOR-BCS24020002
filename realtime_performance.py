@@ -10,6 +10,7 @@ os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
 import argparse
 import csv
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -331,6 +332,29 @@ def _p95(values: list) -> float | None:
     return float(np.percentile(values, 95)) if values else None
 
 
+def _git(*args: str) -> str | None:
+    try:
+        return subprocess.run(["git", *args], cwd=config.BASE_DIR, capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def _run_info() -> list:
+    """Summary lines naming the code version and detection settings, so result files from different versions can be told apart."""
+    commit = _git("rev-parse", "--short", "HEAD")
+    if commit is None:
+        code = "unknown (not a git checkout)"
+    elif _git("status", "--porcelain", "--untracked-files=no"):
+        code = f"{commit} + uncommitted changes"
+    else:
+        code = commit
+    return [
+        f"  Code: {code} (summary written {datetime.now():%Y-%m-%d %H:%M})",
+        f"  Settings: DETECTION_TILE_GRID={config.DETECTION_TILE_GRID}, FACE_ACCEPT_SCORE={config.FACE_ACCEPT_SCORE}, "
+        f"FAKE_THRESHOLD={config.FAKE_THRESHOLD:.2f}",
+    ]
+
+
 def _summary_lines(stats: dict, rows: list) -> list:
     stages = stats["stages"]
     final_ms = [float(r["final_verdict_ms"]) for r in rows if r["final_verdict_ms"]]
@@ -355,6 +379,7 @@ def _summary_lines(stats: dict, rows: list) -> list:
     lines = [
         line,
         "  REAL-TIME PERFORMANCE — FaceForensics++ c23 clips at screen size",
+        *_run_info(),
         f"  Screen {stats['screen'][0]}x{stats['screen'][1]}, main loop capped at DISPLAY_FPS={config.DISPLAY_FPS}; "
         f"{len(rows)} clips.",
         "  Frame latency = real screen grab + face detection + tracking/queueing per tick.",

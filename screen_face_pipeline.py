@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 import config
-from realtime_performance import GAP_SECONDS, _FRAME_INTERVAL, _VideoScreen, _mean, _p95, _playlist
+from realtime_performance import GAP_SECONDS, _FRAME_INTERVAL, _VideoScreen, _mean, _p95, _playlist, _run_info
 from runtime.capture.screen_capture import ScreenCapture
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
@@ -258,6 +258,7 @@ def _summary_lines(stats: dict, rows: list) -> list:
     return [
         line,
         "  SCREEN FACE PIPELINE — FaceForensics++ c23 clips shown full screen",
+        *_run_info(),
         f"  Screen {stats['screen'][0]}x{stats['screen'][1]}. A player process showed {len(rows)} clips full screen; the pipeline",
         f"  grabbed the real screen at DISPLAY_FPS={config.DISPLAY_FPS}, detected, cropped and tracked",
         "  faces on the grab, and turned every face into the JPEG the app submits to",
