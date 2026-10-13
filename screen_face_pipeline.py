@@ -21,7 +21,9 @@ import cv2
 import numpy as np
 
 import config
-from realtime_performance import GAP_SECONDS, _FRAME_INTERVAL, _VideoScreen, _mean, _p95, _playlist, _run_info
+from realtime_performance import (
+    GAP_SECONDS, _FRAME_INTERVAL, _VideoScreen, _hold_test_lock, _mean, _p95, _playlist, _run_info,
+)
 from runtime.capture.screen_capture import ScreenCapture
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
@@ -314,6 +316,7 @@ def main():
     parser.add_argument("--videos-per-subset", type=int, default=config.PIPELINE_VIDEOS_PER_SUBSET,
                         help="Clips shown from each subset (first N by name).")
     args = parser.parse_args()
+    lock = _hold_test_lock()  # referenced until main() returns, so the lock file stays open and locked
 
     playlist = _playlist(args.dataset, args.videos_per_subset)
     seconds = config.PERF_WARMUP_SECONDS

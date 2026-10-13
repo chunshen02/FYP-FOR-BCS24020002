@@ -82,6 +82,10 @@ realtime_performance.py          # Test: FPS / latency / CPU / RAM on FaceForens
 screen_face_pipeline.py          # Test: real screen grab -> face crop/tracking -> BitMind-ready JPEG (no API calls), FF++ full screen
 ```
 
+The three test scripts share a lock (`results/.test.lock`, see `_hold_test_lock` in
+`realtime_performance.py`): a second test started while one is running exits at
+once, since concurrent tests skew each other's screen, CPU and BitMind figures.
+
 ## Key Configuration (config.py)
 
 - `BITMIND_API_KEY` — loaded from `.env` file (never hardcode)

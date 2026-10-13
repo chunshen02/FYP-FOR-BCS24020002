@@ -9,6 +9,7 @@ os.environ.setdefault("MEDIAPIPE_DISABLE_GPU", "1")
 
 import argparse
 import csv
+import msvcrt
 import statistics
 import subprocess
 import sys
@@ -332,6 +333,26 @@ def _p95(values: list) -> float | None:
     return float(np.percentile(values, 95)) if values else None
 
 
+def _hold_test_lock():
+    """
+    Exit if another test script is already running, else hold the lock until this process ends.
+
+    Concurrent tests compete for the screen, the CPU and BitMind's per-key
+    rate limit, which skews both runs' figures. The OS releases the lock when
+    the process exits, even on a crash or Ctrl+C, so it can never go stale.
+    Call it from main(), not at import: screen_face_pipeline's player child
+    process re-imports the main module and must not lock itself out.
+    """
+    os.makedirs(config.RESULTS_DIR, exist_ok=True)
+    handle = open(os.path.join(config.RESULTS_DIR, ".test.lock"), "a")
+    try:
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        sys.exit("[ERROR] Another test script is already running — wait for it to finish "
+                 "(tests compete for the screen, CPU and BitMind's rate limit).")
+    return handle
+
+
 def _git(*args: str) -> str | None:
     try:
         return subprocess.run(["git", *args], cwd=config.BASE_DIR, capture_output=True, text=True, check=True).stdout.strip()
@@ -428,6 +449,7 @@ def main():
     parser.add_argument("--videos-per-subset", type=int, default=config.PERF_VIDEOS_PER_SUBSET,
                         help="Clips played from each subset (first N by name).")
     args = parser.parse_args()
+    lock = _hold_test_lock()  # referenced until main() returns, so the lock file stays open and locked
 
     playlist = _playlist(args.dataset, args.videos_per_subset)
     seconds = 0.0

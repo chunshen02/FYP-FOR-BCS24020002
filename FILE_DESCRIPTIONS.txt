@@ -397,6 +397,10 @@ time from a face first being tracked to its first and final
 verdict. Results are compared with the TARGET_* values in config.py
 (PASS/FAIL) and saved to results/performance_summary_<time>.txt,
 with per-clip rows in results/performance_videos_<time>.csv.
+It also holds the test lock (_hold_test_lock, results/.test.lock)
+that all three test scripts take at start: a test started while
+another is running exits at once, because concurrent tests compete
+for the screen, the CPU and BitMind's per-key rate limit.
 
 ----------------------------------------------------------------
 21. screen_face_pipeline.py

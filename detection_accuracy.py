@@ -16,7 +16,7 @@ import time
 import cv2
 
 import config
-from realtime_performance import _run_info
+from realtime_performance import _hold_test_lock, _run_info
 from runtime.detection.face_detector import FaceDetector
 from runtime.detection.preprocessor import Preprocessor
 from runtime.detection.inference import (
@@ -266,6 +266,7 @@ def main():
 
     os.makedirs(os.path.dirname(os.path.abspath(args.csv)), exist_ok=True)
     if not args.summary_only:
+        lock = _hold_test_lock()  # referenced until main() returns, so the lock file stays open and locked
         _run(args.dataset, args.limit, args.csv)
 
     rows = _load_rows(args.csv)

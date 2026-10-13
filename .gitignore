@@ -53,3 +53,6 @@ test_samples/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Lock held by a running test script
+results/.test.lock
