@@ -124,9 +124,10 @@ class FaceDetector:
             frame_bgr: BGR numpy array from screen capture.
 
         Returns:
-            List of (crop, bbox) tuples, one per detected face, most confident first.
+            List of (crop, bbox, score) tuples, one per detected face, most confident first.
             crop: aligned BGR numpy array cut from frame_bgr at full resolution;
-            bbox: {"x", "y", "w", "h"} in frame_bgr pixels.
+            bbox: {"x", "y", "w", "h"} in frame_bgr pixels;
+            score: BlazeFace detection confidence (0-1).
             Returns an empty list if no faces are detected.
         """
         h, w = frame_bgr.shape[:2]
@@ -156,7 +157,7 @@ class FaceDetector:
             detections += self._detect_region(tile, x, y)
 
         crops = []
-        for _, box, angle in _suppress_duplicates(detections, config.DETECTION_DUPLICATE_OVERLAP):
+        for score, box, angle in _suppress_duplicates(detections, config.DETECTION_DUPLICATE_OVERLAP):
             box = tuple(int(v / scale) for v in box)
             x_min, y_min, x_max, y_max = _expand_bbox(*box, w, h, config.BBOX_EXPAND_RATIO)
             if x_max <= x_min or y_max <= y_min:
@@ -173,7 +174,7 @@ class FaceDetector:
                 "w": x_max - x_min,
                 "h": y_max - y_min,
             }
-            crops.append((crop, bbox))
+            crops.append((crop, bbox, score))
 
         return crops
 

@@ -19,10 +19,11 @@ used across the entire project. This includes:
   - BitMind API endpoint URL and timeout settings
   - Rate limit delay between API requests, and the back-off used
     after an HTTP 429 response
-  - MediaPipe face detection confidence threshold, detection
-    working width (DETECTION_MAX_WIDTH), tiled detection settings
-    (grid size, tile overlap, duplicate merging), and how many faces
-    may await a verdict at once (MAX_PENDING_FACES)
+  - MediaPipe face detection confidence threshold, the higher score
+    a track needs before it counts as a face (FACE_ACCEPT_SCORE),
+    detection working width (DETECTION_MAX_WIDTH), tiled detection
+    settings (grid size, tile overlap, duplicate merging), and how
+    many faces may await a verdict at once (MAX_PENDING_FACES)
   - Bounding box expansion ratio and alignment angle threshold
   - Face crop size and JPEG quality for API submission
   - Fake threshold (FAKE_THRESHOLD) for the binary REAL/DEEPFAKE
@@ -66,9 +67,10 @@ tiles. Each detected box is mapped back to the full-resolution
 frame, expanded by a configurable ratio, and cropped from the
 full-resolution frame so the API sees native pixels; if the face
 tilt exceeds a threshold, the crop is rotated upright about the
-face's own centre. Returns a list of (crop, bbox) tuples sorted
-most confident face first, with bbox in full-resolution frame
-pixels, used by the overlay renderer and inference engine.
+face's own centre. Returns a list of (crop, bbox, score) tuples
+sorted most confident face first, with bbox in full-resolution
+frame pixels and score the BlazeFace confidence, used by the
+overlay renderer and inference engine.
 
 ----------------------------------------------------------------
 5. runtime/detection/preprocessor.py
@@ -138,8 +140,10 @@ continuously in the background. Architecture:
   - Main loop (~15 FPS): captures a screen frame, masks the app's
     own window region for display, optionally crops to a
     user-selected detection zone, runs face detection, assigns
-    stable IDs to every detected face via _FaceTracker, queues
-    crops of faces that need (re-)classification — at most
+    stable IDs to every detected face via _FaceTracker, treats a
+    track as a face (drawn, counted and classified) only once one
+    of its detections reaches FACE_ACCEPT_SCORE, queues crops of
+    accepted faces that need (re-)classification — at most
     MAX_PENDING_FACES at once, most confident first; a classified
     face frees its slot for the next — and emits annotated frames,
     FaceResult lists, and pending bboxes to the GUI thread via Qt

@@ -31,8 +31,8 @@ WINDOW_NAME = "Screen face pipeline test (Esc to stop)"
 QUIT_KEYS = (27, ord("q"))
 # Values of the shared "what is on screen" index besides a clip number.
 WARMUP, GAP = -2, -1
-CLIP_CSV_FIELDS = ["clip", "subset", "video", "frames", "face_hit_rate", "tracks", "track_continuity",
-                   "mean_crop_px", "first_payload_ms", "crop_file"]
+CLIP_CSV_FIELDS = ["clip", "subset", "video", "frames", "face_hit_rate", "tracks", "accepted_tracks",
+                   "track_continuity", "mean_crop_px", "first_payload_ms", "crop_file"]
 
 
 def _player(playlist: list, width: int, height: int, clip_now, clip_start, ready, start, stop):
@@ -108,7 +108,8 @@ def _run(playlist: list, crops_dir: str) -> dict:
     tracker = _FaceTracker()
     preprocessor = Preprocessor()
 
-    clips = [{"frames": 0, "hits": 0, "ids": Counter(), "crop_px": [], "first_payload": None} for _ in playlist]
+    clips = [{"frames": 0, "hits": 0, "ids": Counter(), "accepted": set(), "crop_px": [], "first_payload": None}
+             for _ in playlist]
     stages = {"capture": [], "detect": [], "track": [], "prepare": [], "total": []}
     prep_ms, jpeg_kb, fps_samples = [], [], []
     crop_files = {}   # face_id -> file holding the first JPEG prepared for that track
@@ -135,12 +136,12 @@ def _run(playlist: list, crops_dir: str) -> dict:
             after = clip_now.value
             faces = detector.detect(frame)
             t_detected = time.perf_counter()
-            face_ids = tracker.update([b for _, b in faces])
+            face_ids = tracker.update([b for _, b, _ in faces])
             t_tracked = time.perf_counter()
             # The app prepares only the one crop it submits per second; preparing every
             # face on every frame makes this stage an upper bound.
             payloads, face_prep_ms = [], []
-            for crop, _ in faces:
+            for crop, _, _ in faces:
                 t_prep = time.perf_counter()
                 jpeg_bytes, _ = preprocessor.process_with_array(crop)
                 face_prep_ms.append((time.perf_counter() - t_prep) * 1000)
@@ -180,6 +181,8 @@ def _run(playlist: list, crops_dir: str) -> dict:
                     if faces:
                         clip["hits"] += 1
                         clip["ids"].update(face_ids)
+                        clip["accepted"].update(fid for fid, (_, _, score) in zip(face_ids, faces)
+                                                if score >= config.FACE_ACCEPT_SCORE)
                         clip["crop_px"].append(min(faces[0][0].shape[:2]))
                         if clip["first_payload"] is None:
                             clip["first_payload"] = t_end - clip_start[after]
@@ -217,7 +220,7 @@ def _clip_rows(playlist: list, stats: dict) -> list:
         rows.append({
             "clip": i + 1, "subset": subset, "video": os.path.basename(path),
             "frames": clip["frames"], "face_hit_rate": round(clip["hits"] / clip["frames"], 3),
-            "tracks": len(clip["ids"]),
+            "tracks": len(clip["ids"]), "accepted_tracks": len(clip["accepted"]),
             "track_continuity": round(main_frames / clip["hits"], 3) if clip["hits"] else "",
             "mean_crop_px": round(statistics.mean(clip["crop_px"])) if clip["crop_px"] else "",
             "first_payload_ms": round(clip["first_payload"] * 1000) if clip["first_payload"] is not None else "",
@@ -281,6 +284,7 @@ def _summary_lines(stats: dict, rows: list) -> list:
         row("Main-face track continuity", continuity, "%", f">={config.TARGET_TRACK_CONTINUITY:.0%}",
             meets(continuity, lambda v: v >= 100 * config.TARGET_TRACK_CONTINUITY)),
         row("Mean tracks per clip", _mean([r["tracks"] for r in rows]), ""),
+        row(f"  accepted as faces (score >= {config.FACE_ACCEPT_SCORE})", _mean([r["accepted_tracks"] for r in rows]), ""),
         row("Mean tracking", _mean(stages["track"]), " ms"),
         "  4. BitMind payload preparation (not sent)",
         row("Mean per face (resize + JPEG)", _mean(stats["prep_ms"]), " ms"),

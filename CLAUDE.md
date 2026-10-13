@@ -87,8 +87,9 @@ screen_face_pipeline.py          # Test: real screen grab -> face crop/tracking 
 - `BITMIND_API_KEY` — loaded from `.env` file (never hardcode)
 - `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → DEEPFAKE; below → REAL (user-adjustable in Settings)
 - `CONFIRM_VERDICTS = 3`, `CONFIRM_FAKE_VOTES = 2` — a first DEEPFAKE verdict is re-checked; 2 of 3 decide
-- `MAX_PENDING_FACES = 3` — faces awaiting a BitMind verdict at once; all faces are tracked and drawn
-- `DETECTION_TILE_GRID = 2` — N x N overlapping tiles for small-face detection (1 disables)
+- `FACE_ACCEPT_SCORE = 0.6` — a track is drawn, counted and sent to BitMind once one of its detections scores this high; lower boxes are tracked only
+- `MAX_PENDING_FACES = 3` — accepted faces awaiting a BitMind verdict at once; all accepted faces are tracked and drawn
+- `DETECTION_TILE_GRID = 3` — N x N overlapping tiles for small-face detection (1 disables)
 - `ALERT_TRIGGER_FRAMES = 3` — consecutive DEEPFAKE frames to trigger alert
 - `ALERT_DISMISS_FRAMES = 8` — consecutive non-DEEPFAKE frames to auto-dismiss
 

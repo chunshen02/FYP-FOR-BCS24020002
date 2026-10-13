@@ -124,6 +124,7 @@ class _Pipeline:
         self.pending: dict = {}   # face_id -> (crop, bbox), round-robin order
         self.locked: set = set()
         self.votes: dict = {}     # face_id -> P_fake verdicts until verdict_decided
+        self.accepted: set = set()
         self.inflight: str | None = None
         self.faces: dict = {}     # face_id -> record for the per-clip results
         self.api_ms: list = []
@@ -237,18 +238,22 @@ def _run(playlist: list) -> dict:
             t_detected = time.perf_counter()
             with state.lock:
                 protected = frozenset({state.inflight}) if state.inflight else frozenset()
-            face_ids = tracker.update([b for _, b in faces], protected_ids=protected)
+            face_ids = tracker.update([b for _, b, _ in faces], protected_ids=protected)
             alive = tracker.alive_ids()
             keep = alive | protected
             with state.lock:
                 state.pending = {k: v for k, v in state.pending.items() if k in keep}
                 state.votes = {k: v for k, v in state.votes.items() if k in keep}
                 state.locked &= alive
-                for (crop, bbox), fid in zip(faces, face_ids):
+                state.accepted &= alive
+                for (crop, bbox, score), fid in zip(faces, face_ids):
                     if fid not in state.faces:
-                        state.faces[fid] = {"clip": clip, "first_seen": t0, "first_verdict": None,
-                                            "final_verdict": None, "verdict": "", "calls": 0, "api_s": 0.0}
-                    if fid in state.locked:
+                        state.faces[fid] = {"clip": clip, "first_seen": t0, "first_verdict": None, "final_verdict": None,
+                                            "verdict": "", "calls": 0, "api_s": 0.0, "frames": 0}
+                    state.faces[fid]["frames"] += 1
+                    if score >= config.FACE_ACCEPT_SCORE:
+                        state.accepted.add(fid)
+                    if fid in state.locked or fid not in state.accepted:
                         continue
                     if fid in state.pending or len(state.pending) < config.MAX_PENDING_FACES:
                         state.pending[fid] = (crop, bbox)
@@ -295,11 +300,11 @@ def _run(playlist: list) -> dict:
 
 
 def _clip_rows(playlist: list, faces: dict) -> list:
-    """One row per clip, for its first-tracked face that reached a verdict (or its first face if none did)."""
+    """One row per clip, for its main face: the track seen in most frames, so a stray non-face box never stands in for it."""
     rows = []
     for clip, (subset, label, path) in enumerate(playlist):
-        clip_faces = sorted((r for r in faces.values() if r["clip"] == clip), key=lambda r: r["first_seen"])
-        main = next((r for r in clip_faces if r["final_verdict"]), clip_faces[0] if clip_faces else None)
+        clip_faces = [r for r in faces.values() if r["clip"] == clip]
+        main = max(clip_faces, key=lambda r: r["frames"], default=None)
 
         def ms(key: str) -> str:
             return f"{(main[key] - main['first_seen']) * 1000:.0f}" if main and main[key] else ""
@@ -354,6 +359,7 @@ def _summary_lines(stats: dict, rows: list) -> list:
         f"{len(rows)} clips.",
         "  Frame latency = real screen grab + face detection + tracking/queueing per tick.",
         "  Detection latency = face first tracked -> final verdict (incl. queue wait and confirmation).",
+        "  Per-clip verdicts and latencies are for the clip's main face (the track seen in most frames).",
         "  App-added = detection latency minus the time inside that face's own BitMind requests.",
         line,
         f"  {'Metric':<34}{'Measured':>12}{'Target':>12}{'Status':>8}",

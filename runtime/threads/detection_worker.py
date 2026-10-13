@@ -210,6 +210,7 @@ class DetectionWorker(QThread):
         self._locked_ids: set = set()
         self._recheck_ids: set = set()
         self._votes: dict = {}   # face_id -> P_fake verdicts so far, until verdict_decided; guarded by _pending_lock
+        self._accepted_ids: set = set()   # tracks with a detection >= FACE_ACCEPT_SCORE; guarded by _pending_lock
         self._inflight_lock = threading.Lock()
         self._inflight_id: str | None = None   # face currently mid-HTTP-call, protected from track eviction
         self._excl_lock = threading.Lock()
@@ -227,6 +228,7 @@ class DetectionWorker(QThread):
         self._locked_ids.clear()
         self._recheck_ids.clear()
         self._votes.clear()
+        self._accepted_ids.clear()
         self._inflight_id = None
 
         capture = ScreenCapture(region=self._region)
@@ -297,8 +299,8 @@ class DetectionWorker(QThread):
                     fox, foy = 0, 0
 
                 face_crops = [
-                    (crop, {"x": b["x"] + fox, "y": b["y"] + foy, "w": b["w"], "h": b["h"]})
-                    for crop, b in detector.detect(detection_frame)
+                    (crop, {"x": b["x"] + fox, "y": b["y"] + foy, "w": b["w"], "h": b["h"]}, score)
+                    for crop, b, score in detector.detect(detection_frame)
                 ]
 
                 with self._excl_lock:
@@ -306,16 +308,12 @@ class DetectionWorker(QThread):
                 if excl is not None and face_crops:
                     ex, ey, ew, eh = excl
                     face_crops = [
-                        (crop, b) for (crop, b) in face_crops
+                        (crop, b, score) for (crop, b, score) in face_crops
                         if not (ex <= b["x"] + b["w"] // 2 < ex + ew
                                 and ey <= b["y"] + b["h"] // 2 < ey + eh)
                     ]
 
-                if len(face_crops) != last_face_count:
-                    last_face_count = len(face_crops)
-                    self.face_count_update.emit(last_face_count)
-
-                bboxes = [b for _, b in face_crops]
+                bboxes = [b for _, b, _ in face_crops]
                 with self._inflight_lock:
                     inflight_id = self._inflight_id
                 # A face mid-HTTP-call must not be evicted just because it
@@ -332,20 +330,30 @@ class DetectionWorker(QThread):
                     self._votes = {k: v for k, v in self._votes.items() if k in keep_ids}
                     self._locked_ids &= alive_ids
                     self._recheck_ids &= alive_ids
+                    self._accepted_ids &= alive_ids
                     # detect() returns faces most confident first, so those claim
                     # the MAX_PENDING_FACES queue slots first; a slot frees once
                     # its face is classified and locked. Locked faces already
                     # have a result — only a manual re-check (which clears the
                     # lock) makes them eligible for another classification cycle.
-                    for (crop, bbox), fid in zip(face_crops, face_ids):
-                        if fid in self._locked_ids:
+                    # A track stays accepted once it has scored high, so a face
+                    # that dips below FACE_ACCEPT_SCORE for a few frames is not dropped.
+                    for (crop, bbox, score), fid in zip(face_crops, face_ids):
+                        if score >= config.FACE_ACCEPT_SCORE:
+                            self._accepted_ids.add(fid)
+                        if fid in self._locked_ids or fid not in self._accepted_ids:
                             continue
                         if fid in self._pending_faces or len(self._pending_faces) < config.MAX_PENDING_FACES:
                             self._pending_faces[fid] = (crop, bbox)
+                    face_count = sum(fid in self._accepted_ids for fid in face_ids)
                 with self._result_lock:
                     self._cached_results = {
                         k: v for k, v in self._cached_results.items() if k in keep_ids
                     }
+
+                if face_count != last_face_count:
+                    last_face_count = face_count
+                    self.face_count_update.emit(face_count)
 
                 with self._result_lock, self._pending_lock:
                     results = []
@@ -354,6 +362,8 @@ class DetectionWorker(QThread):
                     # Cached results are refreshed to the current bbox so the
                     # box keeps following the face even though it's locked.
                     for fid, bbox in zip(face_ids, bboxes):
+                        if fid not in self._accepted_ids:
+                            continue
                         cached = self._cached_results.get(fid)
                         if cached is None:
                             pending_bboxes.append(bbox)
