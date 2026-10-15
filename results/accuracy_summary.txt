@@ -1,0 +1,55 @@
+============================================================================================
+  DETECTION ACCURACY — FaceForensics++ c23
+  Code: 38064ff + uncommitted changes (summary written 2026-10-15 09:30)
+  Settings: DETECTION_TILE_GRID=3, FACE_ACCEPT_SCORE=0.6, FAKE_THRESHOLD=0.70
+  (The results CSV is resumable, so its rows may come from earlier runs on other code.)
+  Threshold 70%. Single = first BitMind verdict only. Confirmed = app rule: a first REAL
+  verdict is final, otherwise 2 of 3 verdicts decide and the score is their median.
+  Videos: 600 scored (100 real, 500 deepfake), 0 with no detectable face (excluded).
+  BitMind calls: 980 (1.63 per video), mean response 3762 ms.
+============================================================================================
+  Decision                 TP   FP   TN   FN    Acc.  Bal.Acc   Prec.  Recall     F1    FPR
+  ----------------------------------------------------------------------------------------
+  Single verdict          330    8   92  170   70.3%    79.0%   97.6%   66.0%  78.8%   8.0%
+  Confirmed (app)         307    6   94  193   66.8%    77.7%   98.1%   61.4%  75.5%   6.0%
+
+  Per subset — correct = deepfake caught / real video kept REAL; AUC (first verdict) vs the real videos
+  Subset                n  Correct single  Correct confirmed     AUC  Mean P_fake
+  -------------------------------------------------------------------------------
+  original            100           92.0%              94.0%                24.5%
+  Deepfakes           100           93.0%              90.0%   0.979        91.5%
+  Face2Face           100           71.0%              65.0%   0.909        76.5%
+  FaceSwap            100           76.0%              75.0%   0.934        82.0%
+  FaceShifter         100           51.0%              45.0%   0.824        62.1%
+  NeuralTextures      100           39.0%              32.0%   0.763        52.4%
+
+  Per method (confirmed) — each row = the method's deepfakes + the same 100 real videos; Mean = average over methods
+  Method               TP   TN   FP   FN  Total  Accuracy  Precision  Recall      F1
+  ----------------------------------------------------------------------------------
+  Deepfakes            90   94    6   10    200     92.0%      93.8%   90.0%   91.8%
+  Face2Face            65   94    6   35    200     79.5%      91.5%   65.0%   76.0%
+  FaceSwap             75   94    6   25    200     84.5%      92.6%   75.0%   82.9%
+  FaceShifter          45   94    6   55    200     69.5%      88.2%   45.0%   59.6%
+  NeuralTextures       32   94    6   68    200     63.0%      84.2%   32.0%   46.4%
+  Mean                  —    —    —    —      —     77.7%      90.1%   61.4%   71.3%
+
+  Combined (confirmed) — all 5 methods (100 real + 500 deepfake)
+  Metric                  Result
+  ----------------------------------------------------------------------------------
+  True Positives (TP)     307 of 500 deepfakes correctly flagged
+  True Negatives (TN)     94 of 100 real faces correctly cleared
+  False Positives (FP)    6 real faces wrongly flagged
+  False Negatives (FN)    193 deepfakes missed
+  Accuracy                66.8% (401/600 correct)
+  Precision               98.1% (307/313 flagged faces were deepfakes)
+  Recall                  61.4% (307/500 deepfakes detected)
+  F1 Score                75.5%
+
+  Threshold sweep (single verdict) — for choosing FAKE_THRESHOLD
+  Threshold        FPR   Recall   Bal.Acc
+  0.50           16.0%    76.6%     80.3%
+  0.60           13.0%    72.8%     79.9%
+  0.70            8.0%    66.0%     79.0%  (current)
+  0.80            4.0%    58.6%     77.3%
+  0.90            1.0%    44.4%     71.7%
+============================================================================================
