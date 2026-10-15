@@ -180,16 +180,60 @@ def _auc(real: list, fake: list) -> float:
     return _rate(sum((f > r) + 0.5 * (f == r) for f in fake for r in real), len(fake) * len(real))
 
 
-def _decision_row(name: str, real: list, fake: list, threshold: float) -> str:
+def _metrics(real: list, fake: list, threshold: float) -> dict:
     tp = sum(p >= threshold for p in fake)
     fp = sum(p >= threshold for p in real)
     tn, fn = len(real) - fp, len(fake) - tp
-    precision, recall, fpr = _rate(tp, tp + fp), _rate(tp, len(fake)), _rate(fp, len(real))
-    accuracy = _rate(tp + tn, len(real) + len(fake))
-    balanced = (recall + (1 - fpr)) / 2
-    f1 = _rate(2 * precision * recall, precision + recall)
-    return (f"  {name:<22}{tp:>5}{fp:>5}{tn:>5}{fn:>5}{accuracy:>8.1%}{balanced:>9.1%}"
-            f"{precision:>8.1%}{recall:>8.1%}{f1:>7.1%}{fpr:>7.1%}")
+    precision, recall = _rate(tp, tp + fp), _rate(tp, len(fake))
+    return {
+        "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+        "accuracy": _rate(tp + tn, len(real) + len(fake)),
+        "precision": precision, "recall": recall, "fpr": _rate(fp, len(real)),
+        "f1": _rate(2 * precision * recall, precision + recall),
+    }
+
+
+def _decision_row(name: str, real: list, fake: list, threshold: float) -> str:
+    m = _metrics(real, fake, threshold)
+    balanced = (m["recall"] + (1 - m["fpr"])) / 2
+    return (f"  {name:<22}{m['tp']:>5}{m['fp']:>5}{m['tn']:>5}{m['fn']:>5}{m['accuracy']:>8.1%}{balanced:>9.1%}"
+            f"{m['precision']:>8.1%}{m['recall']:>8.1%}{m['f1']:>7.1%}{m['fpr']:>7.1%}")
+
+
+def _report_lines(real: list, methods: list, threshold: float) -> list:
+    """Per-method and combined tables in the report's layout, from (method, deepfake scores) pairs."""
+    lines = [
+        f"  Per method (confirmed) — each row = the method's deepfakes + the same {len(real)} real videos; "
+        "Mean = average over methods",
+        f"  {'Method':<18}{'TP':>5}{'TN':>5}{'FP':>5}{'FN':>5}{'Total':>7}{'Accuracy':>10}{'Precision':>11}"
+        f"{'Recall':>8}{'F1':>8}",
+        "  " + "-" * 82,
+    ]
+    per_method = [_metrics(real, fake, threshold) for _, fake in methods]
+    for (method, fake), m in zip(methods, per_method):
+        lines.append(f"  {method:<18}{m['tp']:>5}{m['tn']:>5}{m['fp']:>5}{m['fn']:>5}{len(fake) + len(real):>7}"
+                     f"{m['accuracy']:>10.1%}{m['precision']:>11.1%}{m['recall']:>8.1%}{m['f1']:>8.1%}")
+    mean = {k: statistics.mean(m[k] for m in per_method) for k in ("accuracy", "precision", "recall", "f1")}
+    lines.append(f"  {'Mean':<18}{'—':>5}{'—':>5}{'—':>5}{'—':>5}{'—':>7}{mean['accuracy']:>10.1%}"
+                 f"{mean['precision']:>11.1%}{mean['recall']:>8.1%}{mean['f1']:>8.1%}")
+
+    fake = [p for _, scores in methods for p in scores]
+    c = _metrics(real, fake, threshold)
+    lines += [
+        "",
+        f"  Combined (confirmed) — all {len(methods)} methods ({len(real)} real + {len(fake)} deepfake)",
+        f"  {'Metric':<24}Result",
+        "  " + "-" * 82,
+        f"  {'True Positives (TP)':<24}{c['tp']} of {len(fake)} deepfakes correctly flagged",
+        f"  {'True Negatives (TN)':<24}{c['tn']} of {len(real)} real faces correctly cleared",
+        f"  {'False Positives (FP)':<24}{c['fp']} real faces wrongly flagged",
+        f"  {'False Negatives (FN)':<24}{c['fn']} deepfakes missed",
+        f"  {'Accuracy':<24}{c['accuracy']:.1%} ({c['tp'] + c['tn']}/{len(real) + len(fake)} correct)",
+        f"  {'Precision':<24}{c['precision']:.1%} ({c['tp']}/{c['tp'] + c['fp']} flagged faces were deepfakes)",
+        f"  {'Recall':<24}{c['recall']:.1%} ({c['tp']}/{len(fake)} deepfakes detected)",
+        f"  {'F1 Score':<24}{c['f1']:.1%}",
+    ]
+    return lines
 
 
 def _summary_lines(rows: list) -> list:
@@ -238,6 +282,11 @@ def _summary_lines(rows: list) -> list:
             f"  {subset:<18}{len(sub_first):>5}{correct_rate(sub_first, label):>16.1%}"
             f"{correct_rate(sub_final, label):>19.1%}{auc:>8}{_rate(sum(sub_first), len(sub_first)):>13.1%}"
         )
+
+    methods = [(subset, scores("final", label, subset)) for subset, label in _subsets() if label == "DEEPFAKE"]
+    methods = [(subset, fake) for subset, fake in methods if fake]
+    if methods:
+        lines += ["", *_report_lines(scores("final", "REAL"), methods, threshold)]
 
     lines += [
         "",

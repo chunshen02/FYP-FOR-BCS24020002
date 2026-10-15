@@ -377,7 +377,9 @@ finishes, so an interrupted run resumes. The summary (also written
 to results/accuracy_summary.txt) compares a single verdict with the
 confirmed verdict (confusion counts, accuracy, balanced accuracy,
 precision, recall, F1, false-positive rate), lists per-method
-results with ROC-AUC, and sweeps thresholds 0.5-0.9.
+results with ROC-AUC, gives the report's per-method table (each
+method vs the real videos, with a Mean row) and combined table for
+the confirmed verdict, and sweeps thresholds 0.5-0.9.
 --summary-only re-prints it from the CSV without API calls.
 
 ----------------------------------------------------------------
