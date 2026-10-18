@@ -1,7 +1,11 @@
 import os
+import sys
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# A PyInstaller build runs this file from its _internal folder, so the database, screenshots
+# and exports would land among the bundled libraries; keep them beside the exe instead.
+BASE_DIR = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "session_log.db")
 SCREENSHOTS_DIR = os.path.join(BASE_DIR, "screenshots")
 

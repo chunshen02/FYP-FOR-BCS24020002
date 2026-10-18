@@ -49,6 +49,7 @@ Before reporting any task as complete:
 | Numerics         | numpy                 | 2.2.5         |
 | Process metrics  | psutil (perf test)    | (unpinned)    |
 | Notifications    | plyer                 | (unpinned)    |
+| Packaging (exe)  | pyinstaller (build)   | (unpinned)    |
 | Detection API    | BitMind Oracle API    | v1            |
 | Local storage    | SQLite (stdlib)       | built-in      |
 
@@ -80,6 +81,7 @@ runtime/
 detection_accuracy.py            # Test: BitMind accuracy on FaceForensics++ (resumable CSV)
 realtime_performance.py          # Test: FPS / latency / CPU / RAM on FaceForensics++ clips
 screen_face_pipeline.py          # Test: real screen grab -> face crop/tracking -> BitMind-ready JPEG (no API calls), FF++ full screen
+deepfake_detector.spec           # PyInstaller build of the app -> dist/DeepfakeDetector/DeepfakeDetector.exe
 ```
 
 The three test scripts share a lock (`results/.test.lock`, see `_hold_test_lock` in
@@ -109,6 +111,20 @@ BITMIND_API_KEY_SECONDARY=your_second_key_here
 ```
 
 The `.env` file is git-ignored. Never commit it.
+
+## Building the exe
+
+```
+pip install pyinstaller
+pyinstaller deepfake_detector.spec --noconfirm
+```
+
+Produces a folder build, `dist/DeepfakeDetector/` (exe + `_internal/`). The spec bundles
+`.env` (as `_internal/.env`, editable there without rebuilding) and the BlazeFace model, so
+`.env` and `runtime/detection/blaze_face_short_range.tflite` must exist before building.
+Never share or commit `dist/`: it contains the API keys. When frozen, `config.BASE_DIR` is
+the exe's folder, so `session_log.db` and `screenshots/` are written beside the exe; bundled
+read-only files (`.env`, the model) are still found relative to each module's `__file__`.
 
 ## Coding Conventions
 

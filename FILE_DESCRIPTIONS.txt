@@ -15,7 +15,9 @@ file that should be executed directly to launch the program.
 ----------------------------------------------------------------
 Central configuration file that stores all tuneable constants
 used across the entire project. This includes:
-  - File paths (database location)
+  - File paths (database location); in a PyInstaller build the
+    base folder is the exe's folder, so the database and
+    screenshots stay beside the exe
   - BitMind API endpoint URL and timeout settings
   - Rate limit delay between API requests, the back-off used
     after an HTTP 429 response, and how many consecutive 429s
@@ -441,6 +443,21 @@ first payload, compared with the TARGET_* values in config.py
 per-clip rows to results/pipeline_clips_<time>.csv, and the first
 JPEG of each face track to results/pipeline_crops_<time>/. Esc in the
 video window stops the run early.
+
+----------------------------------------------------------------
+22. deepfake_detector.spec
+----------------------------------------------------------------
+PyInstaller build file that packages the app as a Windows program
+(pyinstaller deepfake_detector.spec --noconfirm). It produces a
+folder build, dist/DeepfakeDetector/, holding DeepfakeDetector.exe
+(no console window) and its _internal libraries. It collects all of
+MediaPipe (its native library and graph files are loaded at
+runtime), bundles the BlazeFace model so no download is needed, and
+bundles .env so the exe runs on double-click; the keys can be
+replaced in _internal/.env without rebuilding. The build therefore
+contains the API keys and must not be shared or committed. plyer's
+Windows notification backend is added as a hidden import because
+plyer loads it by name.
 
 ================================================================
   END OF FILE DESCRIPTIONS
