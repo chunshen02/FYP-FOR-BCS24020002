@@ -13,6 +13,9 @@ BITMIND_RATE_LIMIT_DELAY_SEC = 1.0    # Minimum seconds between API calls (1 req
 BITMIND_RATE_LIMIT_BACKOFF_SEC = 5.0       # First pause after HTTP 429 when no Retry-After header; doubles per repeat
 BITMIND_RATE_LIMIT_BACKOFF_MAX_SEC = 60.0  # Upper bound for the HTTP 429 pause
 BITMIND_DEGRADED_FAILURE_THRESHOLD = 3       # Consecutive transient failures before Degraded status
+# BitMind does not document how a used-up quota is reported, so a key also counts as used up when
+# HTTP 429 persists past the back-off (5 + 10 + 20 s), not only when the key is rejected (401/402/403).
+BITMIND_KEY_SWITCH_RATE_LIMITS = 4         # Consecutive HTTP 429s on one key before moving to the next key
 
 # ── Face Detection ─────────────────────────────────────────────────────────────
 FACE_CONFIDENCE_THRESHOLD = 0.3       # MediaPipe BlazeFace detection confidence. Raised from 0.2: on FF++

@@ -1108,6 +1108,7 @@ class MainWindow(QMainWindow):
         self._detection_worker.face_count_update.connect(self._on_face_count_update)
         self._detection_worker.degraded_mode.connect(self._on_degraded_mode)
         self._detection_worker.api_key_rejected.connect(self._on_api_key_rejected)
+        self._detection_worker.api_key_switched.connect(self._on_api_key_switched)
         self._detection_worker.api_notice.connect(lambda msg: self._session_log_event("INFO", msg))
 
         # Alert thread
@@ -1331,12 +1332,19 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot(str)
     def _on_api_key_rejected(self, error_msg: str):
-        """The API refused the key, so no face can be classified — stop the session with a clear cause."""
+        """The API refused every key, so no face can be classified — stop the session with a clear cause."""
         self._set_indicator(self._sb_api, False, "API key rejected")
-        detail = f"BitMind API key rejected — check BITMIND_API_KEY in .env. ({error_msg})"
+        detail = ("BitMind API key rejected — check BITMIND_API_KEY / BITMIND_API_KEY_SECONDARY in .env. "
+                  f"({error_msg})")
         self._session_log_event("ERROR", detail)
         db_log_event("ERROR", detail)
         self._on_stop()
+
+    @pyqtSlot(str)
+    def _on_api_key_switched(self, key_name: str):
+        """The engine stays on the new key for the rest of the run, so the indicator keeps saying so."""
+        self._set_indicator(self._sb_api, True, "Secondary API key in use")
+        self._session_log_event("INFO", f"Primary BitMind API key rejected or used up — switched to {key_name}.")
 
     @pyqtSlot(list, int)
     def _on_alert_triggered(self, peaks: list, faces_on_screen: int):

@@ -7,7 +7,8 @@ the raw fake confidence score.
 BitMind API:
     Endpoint : https://api.bitmind.ai/detect-image
     Method   : HTTP POST
-    Auth     : Bearer token (API key from .env)
+    Auth     : Bearer token (primary API key from .env, then the secondary
+               once the primary is rejected or its quota is used up)
     Body     : JSON { "image": "data:image/jpeg;base64,<b64>" }
     Response : JSON { "isAI": <bool>, "confidence": <float 0.0-1.0>, ... }
 """
@@ -26,13 +27,15 @@ import config
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
+_API_KEY_VARS = ("BITMIND_API_KEY", "BITMIND_API_KEY_SECONDARY")   # in the order they are used
+
 
 class BitmindAPIError(Exception):
     """Base class for all BitMind API failures."""
 
 
 class BitmindAuthError(BitmindAPIError):
-    """Invalid or revoked API key (HTTP 401/403) — never retried."""
+    """Key invalid, revoked or out of credit (HTTP 401/402/403) — never retried with the same key."""
 
 
 class BitmindRateLimitError(BitmindAPIError):
@@ -77,20 +80,37 @@ class DeepfakeInferenceEngine:
     """Submits face crop images to the BitMind API for deepfake classification."""
 
     def __init__(self):
-        self._api_key = os.environ.get("BITMIND_API_KEY", "")
-        if not self._api_key:
+        self._keys = [(name, os.environ[name]) for name in _API_KEY_VARS if os.environ.get(name)]
+        if not self._keys:
             raise EnvironmentError(
-                "BITMIND_API_KEY not found. "
-                "Add it to the .env file at the project root: BITMIND_API_KEY=your_key_here"
+                "BITMIND_API_KEY not found. Add it to the .env file at the project root: "
+                "BITMIND_API_KEY=your_key_here (optional backup: BITMIND_API_KEY_SECONDARY=your_second_key)"
             )
 
         self._session = requests.Session()
-        self._session.headers.update({"Authorization": f"Bearer {self._api_key}"})
         self._last_call_time: float = 0.0
+        self._use_key(0)
+
+    @property
+    def active_key(self) -> str:
+        """Name of the .env variable whose key requests are sent with."""
+        return self._keys[self._key_index][0]
+
+    def _use_key(self, index: int):
+        self._key_index = index
+        self._rate_limit_streak = 0
+        self._session.headers["Authorization"] = f"Bearer {self._keys[index][1]}"
+
+    def _switch_to_next_key(self) -> bool:
+        """Move to the next configured key; False when none is left."""
+        if self._key_index + 1 >= len(self._keys):
+            return False
+        self._use_key(self._key_index + 1)
+        return True
 
     def run_single_attempt(self, jpeg_bytes: bytes, bbox: dict, face_id: str) -> "FaceResult":
-        """Submit one face crop with a single HTTP attempt; raises BitmindAPIError on failure."""
-        p_fake_raw, api_ms = self._post_once(jpeg_bytes)
+        """Submit one face crop with a single HTTP attempt per key; raises BitmindAPIError on failure."""
+        p_fake_raw, api_ms = self._post_with_failover(jpeg_bytes)
         return FaceResult(
             p_fake_raw=p_fake_raw,
             risk_level=risk_level_for(p_fake_raw),
@@ -99,6 +119,24 @@ class DeepfakeInferenceEngine:
             last_updated=time.perf_counter(),
             face_id=face_id,
         )
+
+    def _post_with_failover(self, jpeg_bytes: bytes) -> tuple:
+        """_post_once, retried on the next key once the current key is rejected or its quota looks used up."""
+        while True:
+            try:
+                result = self._post_once(jpeg_bytes)
+            except BitmindAuthError:
+                if not self._switch_to_next_key():
+                    raise
+                continue
+            except BitmindRateLimitError:
+                self._rate_limit_streak += 1
+                if (self._rate_limit_streak < config.BITMIND_KEY_SWITCH_RATE_LIMITS
+                        or not self._switch_to_next_key()):
+                    raise
+                continue
+            self._rate_limit_streak = 0
+            return result
 
     def _throttle(self):
         """Space request starts at least BITMIND_RATE_LIMIT_DELAY_SEC apart (1 request/second free tier)."""
@@ -151,8 +189,8 @@ class DeepfakeInferenceEngine:
                 raise BitmindAPIError(f"Malformed response: {response.text}") from e
             p_fake = confidence if is_ai else 1.0 - confidence
             return p_fake, api_ms
-        if response.status_code in (401, 403):
-            raise BitmindAuthError(f"Authentication failed (HTTP {response.status_code}): {response.text}")
+        if response.status_code in (401, 402, 403):
+            raise BitmindAuthError(f"{self.active_key} refused (HTTP {response.status_code}): {response.text}")
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After", "")
             raise BitmindRateLimitError(f"Rate limit exceeded (HTTP 429): {response.text}",

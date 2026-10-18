@@ -17,8 +17,10 @@ Central configuration file that stores all tuneable constants
 used across the entire project. This includes:
   - File paths (database location)
   - BitMind API endpoint URL and timeout settings
-  - Rate limit delay between API requests, and the back-off used
-    after an HTTP 429 response
+  - Rate limit delay between API requests, the back-off used
+    after an HTTP 429 response, and how many consecutive 429s
+    move requests to the secondary API key
+    (BITMIND_KEY_SWITCH_RATE_LIMITS)
   - MediaPipe face detection confidence threshold, the higher score
     a track needs before it counts as a face (FACE_ACCEPT_SCORE),
     detection working width (DETECTION_MAX_WIDTH), tiled detection
@@ -108,8 +110,15 @@ returns classification results. Key components:
     (not the gap after each response), base64-encodes the JPEG payload,
     POSTs it to the API, and parses the isAI + confidence fields
     to derive P_fake. Failures are raised as typed errors: auth
-    (401/403), rate limit (429, carrying any Retry-After value),
-    transient (timeout, connection, 5xx), or other.
+    (401/402/403), rate limit (429, carrying any Retry-After value),
+    transient (timeout, connection, 5xx), or other. It reads a
+    primary key (BITMIND_API_KEY) and an optional secondary key
+    (BITMIND_API_KEY_SECONDARY) from .env; when the primary is
+    refused, or HTTP 429 repeats BITMIND_KEY_SWITCH_RATE_LIMITS
+    times in a row (BitMind does not document how a used-up quota
+    is reported), it retries the request on the secondary and stays
+    on it. active_key names the key in use. An auth or rate-limit
+    error reaches the caller only when no key is left to try.
 
   - risk_level_for(): maps a P_fake score to REAL/DEEPFAKE using
     the current FAKE_THRESHOLD.
@@ -163,8 +172,9 @@ continuously in the background. Architecture:
     user requests a manual re-check. Transient failures count
     towards a Degraded state; an HTTP 429 pauses requests (Retry-
     After, or a doubling back-off) without counting as a failure;
-    a rejected API key stops the API thread and is reported via
-    api_key_rejected.
+    a move to the secondary API key is logged and reported via
+    api_key_switched; once every key is refused the API thread
+    stops and reports it via api_key_rejected.
 
   - _FaceTracker: assigns stable string IDs to faces across
     frames using bounding box centre proximity, ensuring that

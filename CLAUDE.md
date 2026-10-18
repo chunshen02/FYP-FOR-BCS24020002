@@ -88,7 +88,8 @@ once, since concurrent tests skew each other's screen, CPU and BitMind figures.
 
 ## Key Configuration (config.py)
 
-- `BITMIND_API_KEY` — loaded from `.env` file (never hardcode)
+- `BITMIND_API_KEY` / `BITMIND_API_KEY_SECONDARY` — primary and optional backup key, loaded from `.env` (never hardcode)
+- `BITMIND_KEY_SWITCH_RATE_LIMITS = 4` — the engine moves to the secondary key on HTTP 401/402/403, or after this many consecutive 429s; it stays there until restart
 - `FAKE_THRESHOLD = 0.70` — P_fake ≥ 0.70 → DEEPFAKE; below → REAL (user-adjustable in Settings)
 - `CONFIRM_VERDICTS = 3`, `CONFIRM_FAKE_VOTES = 2` — a first DEEPFAKE verdict is re-checked; 2 of 3 decide
 - `FACE_ACCEPT_SCORE = 0.6` — a track is drawn, counted and sent to BitMind once one of its detections scores this high; lower boxes are tracked only
@@ -99,10 +100,12 @@ once, since concurrent tests skew each other's screen, CPU and BitMind figures.
 
 ## API Setup
 
-BitMind API key must be placed in a `.env` file at the project root:
+BitMind API keys must be placed in a `.env` file at the project root (the
+secondary key is optional and used once the primary is rejected or used up):
 
 ```
 BITMIND_API_KEY=your_key_here
+BITMIND_API_KEY_SECONDARY=your_second_key_here
 ```
 
 The `.env` file is git-ignored. Never commit it.

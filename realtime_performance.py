@@ -439,7 +439,8 @@ def _summary_lines(stats: dict, rows: list) -> list:
         f"mean response {fmt(_mean(stats['api_ms']), ' ms')}",
     ]
     if stats["auth_error"]:
-        lines.append(f"  [ERROR] BitMind rejected the API key — check BITMIND_API_KEY in .env. ({stats['auth_error']})")
+        lines.append("  [ERROR] BitMind rejected the API key — check BITMIND_API_KEY / BITMIND_API_KEY_SECONDARY "
+                     f"in .env. ({stats['auth_error']})")
     lines.append(line)
     return lines
 

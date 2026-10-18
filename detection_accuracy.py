@@ -133,18 +133,23 @@ def _run(dataset: str, limit: int, csv_path: str):
 
     write_header = not os.path.exists(csv_path)
     t_start = time.perf_counter()
+    active_key = engine.active_key
     try:
         with open(csv_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             if write_header:
                 writer.writeheader()
             for i, (subset, label, path) in enumerate(videos, start=1):
+                if engine.active_key != active_key:
+                    print(f"  BitMind key {active_key} rejected or used up — switched to {engine.active_key}")
+                    active_key = engine.active_key
                 video = os.path.basename(path)
                 prefix = f"  [{i:>{len(str(len(videos)))}}/{len(videos)}] {subset + '/' + video:<34}"
                 try:
                     votes, api_ms = _evaluate_video(path, detector, preprocessor, engine)
                 except BitmindAuthError as e:
-                    print(f"[ERROR] BitMind rejected the API key — check BITMIND_API_KEY in .env. ({e})")
+                    print("[ERROR] BitMind rejected the API key — check BITMIND_API_KEY / "
+                          f"BITMIND_API_KEY_SECONDARY in .env. ({e})")
                     break
                 except BitmindAPIError as e:
                     print(f"{prefix} SKIPPED ({e}); it is retried on the next run")

@@ -26,7 +26,20 @@ STEP 1 — GET AN API KEY
    Example:
        BITMIND_API_KEY=bitmind_abc123xyz
 
-5. Save the file. The system will load the key automatically
+5. Optional: if you have a second API key, add it on the next
+   line as a backup:
+
+       BITMIND_API_KEY_SECONDARY=your_second_api_key_here
+
+   The system always starts with BITMIND_API_KEY (the primary).
+   If BitMind rejects it (HTTP 401/402/403) or keeps answering
+   "rate limit exceeded" (HTTP 429) after 4 tries in a row,
+   which is how a used-up quota shows, the system moves to the
+   secondary key and keeps using it until it is restarted. The
+   switch is written to the session log and the status bar shows
+   "Secondary API key in use".
+
+6. Save the file. The system will load the keys automatically
    when it starts. The .env file is never shared or uploaded.
 
 
@@ -100,7 +113,8 @@ to stay within this limit. No manual configuration is needed.
 SUMMARY
 -------
 To connect the system to the BitMind API, only one action is
-required from the user: place the API key inside the .env file.
+required from the user: place the API key (and optionally a
+backup key) inside the .env file.
 Everything else — sending the image, reading the response,
 applying the risk level, and triggering alerts — is handled
 automatically by the system.

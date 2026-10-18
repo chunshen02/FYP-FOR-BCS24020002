@@ -180,7 +180,8 @@ class DetectionWorker(QThread):
         fps_update(float): Current processing FPS.
         api_response_update(float): Most recent BitMind API response time (ms).
         error_occurred(str): Error message if the pipeline crashes.
-        api_key_rejected(str): The API refused the key (HTTP 401/403); the API thread has stopped.
+        api_key_rejected(str): The API refused every configured key; the API thread has stopped.
+        api_key_switched(str): Requests moved to the next key (its .env variable name).
         api_notice(str): Informational API message for the session log (e.g. a rate-limit pause).
     """
 
@@ -192,6 +193,7 @@ class DetectionWorker(QThread):
     face_count_update = pyqtSignal(int)
     degraded_mode = pyqtSignal(bool)           # True when the BitMind API is unreachable
     api_key_rejected = pyqtSignal(str)
+    api_key_switched = pyqtSignal(str)
     api_notice = pyqtSignal(str)
 
     def __init__(self, region: dict = None, face_detector=None, engine=None, parent=None):
@@ -409,6 +411,7 @@ class DetectionWorker(QThread):
         consecutive_failures = 0
         degraded = False
         rate_limit_backoff = config.BITMIND_RATE_LIMIT_BACKOFF_SEC
+        active_key = engine.active_key
 
         while self._running:
             with self._pending_lock:
@@ -458,6 +461,10 @@ class DetectionWorker(QThread):
             finally:
                 with self._inflight_lock:
                     self._inflight_id = None
+                if engine.active_key != active_key:
+                    db_log_event("INFO", f"BitMind key {active_key} rejected or used up — switched to {engine.active_key}.")
+                    active_key = engine.active_key
+                    self.api_key_switched.emit(active_key)
 
             if consecutive_failures or degraded:
                 consecutive_failures = 0
