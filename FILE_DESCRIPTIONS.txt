@@ -222,8 +222,11 @@ and background threads together. Responsibilities include:
     forwarding them to DetectionWorker.
   - Mini Mode: collapsing to a small always-on-top bar with live
     face thumbnails and Start/Stop controls, so a meeting window
-    underneath stays visible; all other sections are hidden
-    (not destroyed), preserving state when returning to full mode.
+    underneath stays visible; an alert shows as a one-line banner
+    with an Acknowledge button instead of the full alert card, and
+    session history stays hidden even after a session is saved.
+    All other sections are hidden (not destroyed), preserving state
+    when returning to full mode.
   - Pre-initialising the shared FaceDetector and
     DeepfakeInferenceEngine on a background thread at startup, and
     reusing them across sessions to avoid a slow per-session reload.

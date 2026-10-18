@@ -426,6 +426,32 @@ class MainWindow(QMainWindow):
         bar.setVisible(False)
         return bar
 
+    def _build_mini_alert_banner(self) -> QWidget:
+        """One-line alert with an Acknowledge button, used in Mini mode instead of the full alert card."""
+        banner = QWidget()
+        banner.setObjectName("alert_card")
+        layout = QHBoxLayout(banner)
+        layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        icon_label = QLabel("⚠")
+        icon_label.setStyleSheet("color: #F59E0B; font-size: 13px;")
+        layout.addWidget(icon_label)
+        header_label = QLabel("Deepfake detected")
+        header_label.setStyleSheet("color: #FBBF24; font-size: 11px; font-weight: bold;")
+        layout.addWidget(header_label)
+        layout.addStretch()
+
+        btn_acknowledge = QPushButton("Acknowledge")
+        btn_acknowledge.setObjectName("btn_acknowledge")
+        btn_acknowledge.setFixedHeight(22)
+        btn_acknowledge.setStyleSheet("padding: 2px 10px;")
+        btn_acknowledge.clicked.connect(self._on_acknowledge_alert)
+        layout.addWidget(btn_acknowledge)
+
+        banner.setVisible(False)
+        return banner
+
     _MINI_THUMBNAILS = 3
 
     def _build_mini_face_strip(self) -> QWidget:
@@ -471,6 +497,10 @@ class MainWindow(QMainWindow):
         # Mini Mode status/control bar (hidden unless in Mini mode)
         self._mini_bar = self._build_mini_bar()
         right_layout.addWidget(self._mini_bar)
+
+        # Mini Mode one-line alert (hidden unless an alert is active in Mini mode)
+        self._mini_alert_banner = self._build_mini_alert_banner()
+        right_layout.addWidget(self._mini_alert_banner)
 
         # Mini Mode live face thumbnails (hidden unless in Mini mode)
         self._mini_face_strip = self._build_mini_face_strip()
@@ -855,13 +885,10 @@ class MainWindow(QMainWindow):
         self._set_indicator(self._sb_api, api_key_ok, "API key set" if api_key_ok else "API key missing")
 
     def refresh_history(self):
-        """Reload session history from database and update table visibility."""
+        """Reload session history from the database; the section shows only in Full mode with sessions."""
         sessions = get_all_sessions(limit=100)
-        if not sessions:
-            self._history_section.setVisible(False)
-        else:
-            self._history_section.setVisible(True)
-            self.populate_history_table(sessions)
+        self.populate_history_table(sessions)
+        self._history_section.setVisible(bool(sessions) and not self._mini_mode)
 
     def populate_history_table(self, sessions: list):
         """Populate history table with session data."""
@@ -1043,8 +1070,7 @@ class MainWindow(QMainWindow):
         self._alert_count = 0
         self._degraded = False
 
-        # Hide alert card
-        self._alert_card.setVisible(False)
+        self._show_alert(False)
 
         # Reset confidence + analysis
         self._gauge.set_value(0, "—")
@@ -1137,7 +1163,8 @@ class MainWindow(QMainWindow):
 
         self._btn_start.setEnabled(True)
         self._btn_mini_start.setEnabled(True)
-        self._alert_card.setVisible(False)
+        self._current_alert_active = False   # else switching modes after Stop would re-show the alert
+        self._show_alert(False)
         self._low_light_bar.setVisible(False)
         self._video_widget.clear()
         self._lbl_api_ms.setText("API: — ms")
@@ -1203,10 +1230,15 @@ class MainWindow(QMainWindow):
         cv2.imwrite(os.path.join(config.SCREENSHOTS_DIR, filename), shot)
         return filename
 
+    def _show_alert(self, active: bool):
+        """Show the active alert as the full card, or as the one-line banner in Mini mode."""
+        self._alert_card.setVisible(active and not self._mini_mode)
+        self._mini_alert_banner.setVisible(active and self._mini_mode)
+
     @pyqtSlot()
     def _on_acknowledge_alert(self):
         """Acknowledge the current alert."""
-        self._alert_card.setVisible(False)
+        self._show_alert(False)
         self._current_alert_active = False
         if self._session_active and not self._degraded:
             self._set_status("Detecting")
@@ -1318,7 +1350,7 @@ class MainWindow(QMainWindow):
         Analysis card via _on_frame_ready, not duplicated into the log here.
         """
         self._alert_count += len(peaks)
-        self._alert_card.setVisible(True)
+        self._show_alert(True)
         self._current_alert_active = True
         self._set_status("Alert")
         notify_alert(self, peaks[0])
@@ -1337,7 +1369,7 @@ class MainWindow(QMainWindow):
         """Handle alert dismissal from alert thread."""
         if not self._current_alert_active:
             return  # already acknowledged by the user — nothing left to dismiss
-        self._alert_card.setVisible(False)
+        self._show_alert(False)
         self._current_alert_active = False
         if self._session_active and not self._degraded:
             self._set_status("Detecting")
@@ -1624,7 +1656,7 @@ QTextEdit#session_log {
 
     # -- Mini Mode ---------------------------------------------------------------
 
-    _MINI_MODE_SIZE = (300, 220)
+    _MINI_MODE_SIZE = (300, 240)   # tall enough for the alert banner above the face thumbnails without scrolling
     _FULL_MODE_MIN_SIZE = (820, 600)
 
     @pyqtSlot()
@@ -1659,6 +1691,7 @@ QTextEdit#session_log {
         self.statusBar().setVisible(False)
         self._mini_bar.setVisible(True)
         self._mini_face_strip.setVisible(True)
+        self._show_alert(self._current_alert_active)
         self._btn_mini_mode.setText("⛶ Full Mode")
 
         # Changing window flags on an already-visible top-level window
@@ -1687,6 +1720,7 @@ QTextEdit#session_log {
         self.statusBar().setVisible(True)
         self._mini_bar.setVisible(False)
         self._mini_face_strip.setVisible(False)
+        self._show_alert(self._current_alert_active)
         self._btn_mini_mode.setText("⛶ Mini Mode")
 
         self.hide()
