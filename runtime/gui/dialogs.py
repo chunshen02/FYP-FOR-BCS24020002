@@ -24,47 +24,65 @@ from PyQt6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 
 import config
 from runtime.detection.inference import ENV_PATH, has_api_key
+from runtime.gui import theme
 
-_DIALOG_STYLE = """
-    QDialog {
-        background-color: #1e1e1e;
-    }
-    QLabel, QCheckBox {
-        color: #dddddd;
-    }
-    QSpinBox {
-        background-color: #2a2a2a;
-        color: #dddddd;
-        border: 1px solid #555555;
-        border-radius: 4px;
+_DIALOG_STYLE = f"""
+    QDialog {{
+        background-color: {theme.BG};
+        border: 1px solid {theme.CYAN_DIM};
+        font-family: '{theme.DISPLAY_FONT}', 'Segoe UI', sans-serif;
+    }}
+    QLabel, QCheckBox {{
+        color: {theme.TEXT};
+    }}
+    QCheckBox::indicator {{
+        width: 11px;
+        height: 11px;
+        border: 1px solid {theme.CYAN_DIM};
+        background-color: {theme.SURFACE};
+    }}
+    QCheckBox::indicator:checked {{
+        background-color: {theme.CYAN};
+        border-color: {theme.CYAN};
+    }}
+    QSpinBox {{
+        background-color: {theme.SURFACE};
+        color: {theme.CYAN};
+        border: 1px solid {theme.CYAN_DIM};
         padding: 2px 6px;
-    }
+        font-family: '{theme.MONO_FONT}';
+    }}
+    QSpinBox:focus {{
+        border-color: {theme.CYAN};
+    }}
 """
 
-_SECONDARY_BUTTON_STYLE = """
-    QPushButton {
+_SECONDARY_BUTTON_STYLE = f"""
+    QPushButton {{
         background-color: transparent;
-        border: 1px solid #555555;
-        border-radius: 6px;
-        color: #aaaaaa;
+        border: 1px solid {theme.CYAN_DIM};
+        color: {theme.TEXT_DIM};
         font-size: 12px;
         padding: 0 16px;
-    }
-    QPushButton:hover { background-color: #2a2a2a; }
+    }}
+    QPushButton:hover {{ background-color: {theme.rgba(theme.CYAN, 0.08)}; color: {theme.CYAN}; }}
+    QPushButton:disabled {{ border-color: {theme.BORDER}; color: {theme.TEXT_MUTED}; }}
 """
 
-_PRIMARY_BUTTON_STYLE = """
-    QPushButton {
-        background-color: #E1F5EE;
-        border: 1px solid #1D9E75;
-        border-radius: 6px;
-        color: #085041;
+_PRIMARY_BUTTON_STYLE = f"""
+    QPushButton {{
+        background-color: {theme.rgba(theme.CYAN, 0.14)};
+        border: 1px solid {theme.CYAN};
+        color: {theme.CYAN};
         font-size: 12px;
-        font-weight: 500;
+        font-weight: 600;
+        letter-spacing: 1px;
         padding: 0 20px;
-    }
-    QPushButton:hover { background-color: #9FE1CB; }
+    }}
+    QPushButton:hover {{ background-color: {theme.rgba(theme.CYAN, 0.28)}; }}
 """
+
+_TITLE_STYLE = f"font-size: 15px; font-weight: 600; letter-spacing: 1px; color: {theme.CYAN};"
 
 _SETTING_KEYS = ("FAKE_THRESHOLD", "ALERT_SOUND_ENABLED", "ALERT_NOTIFICATION_ENABLED", "ALERT_AUTO_SCREENSHOT")
 # Captured at import, before load_saved_settings() overrides them, so
@@ -93,7 +111,7 @@ def quick_start_pending() -> bool:
 def _divider() -> QFrame:
     line = QFrame()
     line.setFrameShape(QFrame.Shape.HLine)
-    line.setStyleSheet("color: #333333;")
+    line.setStyleSheet(f"color: {theme.BORDER};")
     return line
 
 
@@ -104,7 +122,7 @@ def _dialog_button(text: str, style: str) -> QPushButton:
     return button
 
 
-def _guide_text(text: str, style: str = "font-size: 12px; color: #C4C9D4;") -> QLabel:
+def _guide_text(text: str, style: str = f"font-size: 12px; color: {theme.TEXT};") -> QLabel:
     label = QLabel(text)
     label.setTextFormat(Qt.TextFormat.RichText)
     label.setWordWrap(True)
@@ -118,7 +136,7 @@ def _guide_row(icon: str, text: str) -> QHBoxLayout:
     icon_label = QLabel(icon)
     icon_label.setFixedWidth(22)
     icon_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-    icon_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #9CA3AF;")
+    icon_label.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {theme.CYAN};")
     row.addWidget(icon_label)
     row.addWidget(_guide_text(text), 1)
     return row
@@ -130,9 +148,9 @@ def _legend_row(border: str, name: str, meaning: str) -> QHBoxLayout:
     row.setSpacing(10)
     swatch = QLabel()
     swatch.setFixedSize(22, 16)
-    swatch.setStyleSheet(f"border: {border}; border-radius: 3px;")
+    swatch.setStyleSheet(f"border: {border};")
     row.addWidget(swatch, 0, Qt.AlignmentFlag.AlignTop)
-    row.addWidget(_guide_text(f"<b style='color: #E5E7EB;'>{name}</b> — {meaning}"), 1)
+    row.addWidget(_guide_text(f"<b style='color: {theme.TEXT};'>{name}</b> — {meaning}"), 1)
     return row
 
 
@@ -169,7 +187,7 @@ class SaveSessionDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         title = QLabel("Save session results?")
-        title.setStyleSheet("font-size: 14px; font-weight: 500; color: #ffffff;")
+        title.setStyleSheet(_TITLE_STYLE)
         layout.addWidget(title)
         layout.addWidget(_divider())
 
@@ -179,9 +197,9 @@ class SaveSessionDialog(QDialog):
         def make_row(label: str, value: str) -> QHBoxLayout:
             row = QHBoxLayout()
             lbl = QLabel(label)
-            lbl.setStyleSheet("font-size: 12px; color: #888888;")
+            lbl.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_DIM};")
             val = QLabel(value)
-            val.setStyleSheet("font-size: 12px; color: #dddddd;")
+            val.setStyleSheet(f"font-size: 12px; color: {theme.TEXT}; font-family: '{theme.MONO_FONT}';")
             val.setAlignment(Qt.AlignmentFlag.AlignRight)
             row.addWidget(lbl)
             row.addStretch()
@@ -193,26 +211,11 @@ class SaveSessionDialog(QDialog):
 
         result_row = QHBoxLayout()
         result_lbl = QLabel("Result")
-        result_lbl.setStyleSheet("font-size: 12px; color: #888888;")
+        result_lbl.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_DIM};")
         result_badge = QLabel(
             "Deepfake detected" if alert_count > 0 else "Clean"
         )
-        if alert_count > 0:
-            result_badge.setStyleSheet(
-                """
-                font-size: 11px; font-weight: 500;
-                background-color: #FCEBEB; color: #A32D2D;
-                border-radius: 3px; padding: 2px 8px;
-                """
-            )
-        else:
-            result_badge.setStyleSheet(
-                """
-                font-size: 11px; font-weight: 500;
-                background-color: #EAF3DE; color: #3B6D11;
-                border-radius: 3px; padding: 2px 8px;
-                """
-            )
+        result_badge.setStyleSheet(theme.badge_style(theme.RED if alert_count > 0 else theme.GREEN, 11))
         result_row.addWidget(result_lbl)
         result_row.addStretch()
         result_row.addWidget(result_badge)
@@ -261,17 +264,19 @@ class EvidenceDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         title = QLabel(f"Alert screenshots — session of {started_at}")
-        title.setStyleSheet("font-size: 14px; font-weight: 500; color: #ffffff;")
+        title.setStyleSheet(_TITLE_STYLE)
         layout.addWidget(title)
         layout.addWidget(_divider())
 
         self._image = QLabel()
         self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image.setStyleSheet("background-color: #000000; color: #888888; font-size: 12px;")
+        self._image.setStyleSheet(
+            f"background-color: #000000; color: {theme.TEXT_DIM}; font-size: 12px; border: 1px solid {theme.BORDER};"
+        )
         layout.addWidget(self._image)
 
         self._caption = QLabel()
-        self._caption.setStyleSheet("font-size: 12px; color: #aaaaaa;")
+        self._caption.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_DIM}; font-family: '{theme.MONO_FONT}';")
         layout.addWidget(self._caption)
         layout.addWidget(_divider())
 
@@ -354,7 +359,7 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
 
         title = QLabel("Settings")
-        title.setStyleSheet("font-size: 14px; font-weight: 500; color: #ffffff;")
+        title.setStyleSheet(_TITLE_STYLE)
         layout.addWidget(title)
         layout.addWidget(_divider())
 
@@ -375,7 +380,7 @@ class SettingsDialog(QDialog):
             "verdicts; use the ↻ button beside a face's verdict to re-classify it."
         )
         hint.setWordWrap(True)
-        hint.setStyleSheet("font-size: 10px; color: #888888;")
+        hint.setStyleSheet(f"font-size: 10px; color: {theme.TEXT_DIM};")
         layout.addWidget(hint)
 
         self._sound = QCheckBox("Beep on alert")
@@ -461,10 +466,12 @@ class QuickStartDialog(QDialog):
         layout.setContentsMargins(self._MARGIN, self._MARGIN, self._MARGIN, self._MARGIN)
 
         self._step_label = QLabel()
-        self._step_label.setStyleSheet("font-size: 10px; font-weight: 600; letter-spacing: 1px; color: #6B7280;")
+        self._step_label.setStyleSheet(
+            f"font-size: 10px; font-weight: 600; letter-spacing: 2px; color: {theme.MAGENTA};"
+        )
         layout.addWidget(self._step_label)
         self._title = QLabel()
-        self._title.setStyleSheet("font-size: 14px; font-weight: 500; color: #ffffff;")
+        self._title.setStyleSheet(_TITLE_STYLE)
         layout.addWidget(self._title)
         layout.addWidget(_divider())
         layout.addWidget(self._pages)
@@ -494,7 +501,7 @@ class QuickStartDialog(QDialog):
         self._step_label.setText(f"STEP {index + 1} OF {count}")
         self._title.setText(self._titles[index])
         self._dots.setText("&nbsp;&nbsp;".join(
-            f"<span style='color: {'#22C55E' if i == index else '#4B5563'};'>●</span>" for i in range(count)
+            f"<span style='color: {theme.CYAN if i == index else theme.TEXT_MUTED};'>■</span>" for i in range(count)
         ))
         self._back_btn.setVisible(index > 0)
         self._skip_btn.setVisible(not last)
@@ -513,7 +520,7 @@ class QuickStartDialog(QDialog):
         layout.addWidget(_guide_text(
             "This app watches your screen during a video call and warns you when a face on it "
             "looks like a deepfake.",
-            "font-size: 12px; color: #E5E7EB;",
+            f"font-size: 12px; color: {theme.TEXT};",
         ))
         layout.addLayout(_guide_row(
             "🖥", f"It captures your <b>primary screen</b> about {config.DISPLAY_FPS} times a second "
@@ -527,15 +534,15 @@ class QuickStartDialog(QDialog):
 
         if has_api_key():
             text = "✓&nbsp; BitMind API key found — you are ready to start."
-            background, border, colour = "#0E1F15", "#1D5C35", "#4ADE80"
+            colour = theme.GREEN
         else:
             text = (f"✗&nbsp; No BitMind API key found. Add the line <b>BITMIND_API_KEY=your_key</b> "
                     f"to <b>{html.escape(ENV_PATH)}</b>, then restart the app.")
-            background, border, colour = "#2A1414", "#5C2020", "#FCA5A5"
+            colour = theme.RED
         key_check = QFrame()
         key_check.setObjectName("key_check")
         key_check.setStyleSheet(
-            f"QFrame#key_check {{ background-color: {background}; border: 1px solid {border}; border-radius: 6px; }}"
+            f"QFrame#key_check {{ background-color: {theme.rgba(colour, 0.08)}; border: 1px solid {colour}; }}"
         )
         key_layout = QVBoxLayout(key_check)
         key_layout.setContentsMargins(10, 8, 10, 8)
@@ -572,10 +579,10 @@ class QuickStartDialog(QDialog):
     def _results_page() -> QWidget:
         page, layout = _guide_page()
         threshold = f"{config.FAKE_THRESHOLD * 100:.0f}%"
-        layout.addLayout(_legend_row("2px dashed #6B7280", "Analyzing…", "face found, verdict not ready yet."))
-        layout.addLayout(_legend_row("2px solid #22C55E", "REAL", f"deepfake score below {threshold}."))
-        layout.addLayout(_legend_row("2px solid #EF4444", "DEEPFAKE", f"deepfake score of {threshold} or more."))
-        layout.addLayout(_legend_row("2px dashed #F59E0B", "Re-checking…", "a fresh verdict was requested."))
+        layout.addLayout(_legend_row(f"2px dashed {theme.GREY}", "Analyzing…", "face found, verdict not ready yet."))
+        layout.addLayout(_legend_row(f"2px solid {theme.GREEN}", "REAL", f"deepfake score below {threshold}."))
+        layout.addLayout(_legend_row(f"2px solid {theme.RED}", "DEEPFAKE", f"deepfake score of {threshold} or more."))
+        layout.addLayout(_legend_row(f"2px dashed {theme.AMBER}", "Re-checking…", "a fresh verdict was requested."))
         layout.addWidget(_divider())
         layout.addLayout(_guide_row(
             "%", "The percentage on each badge is BitMind's deepfake score. A suspicious face is checked "

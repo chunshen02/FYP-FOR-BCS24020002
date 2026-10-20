@@ -8,6 +8,16 @@ from datetime import datetime
 from PyQt6.QtWidgets import QTextEdit, QFrame
 from PyQt6.QtCore import pyqtSlot
 
+from runtime.gui import theme
+
+_EVENT_COLOURS = {
+    "ALERT": theme.RED,
+    "DISMISS": theme.GREEN,
+    "SESSION": theme.TEXT_DIM,
+    "INFO": theme.TEXT,
+    "ERROR": theme.AMBER,
+}
+
 
 class SessionLog(QTextEdit):
     """
@@ -25,21 +35,14 @@ class SessionLog(QTextEdit):
     def log_event(self, event_type: str, detail: str):
         """Append a timestamped entry and scroll to bottom."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        colour_map = {
-            "ALERT": "#F87171",
-            "DISMISS": "#4ADE80",
-            "SESSION": "#8A93A3",
-            "INFO": "#C4C9D4",
-            "ERROR": "#FBBF24",
-        }
-        colour = colour_map.get(event_type, "#C4C9D4")
+        colour = _EVENT_COLOURS.get(event_type, theme.TEXT)
         # Kept single-line by design: full reasoning lives in the Detection
         # Analysis card, not in this event timeline (see main_window.py).
         entry = (
             f'<p style="margin: 0 0 6px 0; line-height: 145%;">'
-            f'<span style="color:#4B5563;">[{timestamp}]</span> '
+            f'<span style="color:{theme.TEXT_MUTED};">[{timestamp}]</span> '
             f'<span style="color:{colour}; font-weight: bold;">[{event_type}]</span> '
-            f'<span style="color:#C4C9D4;">{detail}</span>'
+            f'<span style="color:{theme.TEXT};">{detail}</span>'
             f'</p>'
         )
         self.append(entry)

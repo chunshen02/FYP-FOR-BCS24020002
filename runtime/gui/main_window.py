@@ -45,6 +45,7 @@ from runtime.gui.dialogs import (
     EvidenceDialog, QuickStartDialog, SaveSessionDialog, SettingsDialog, load_saved_settings, quick_start_pending,
 )
 from runtime.gui.gauge_widget import GaugeWidget
+from runtime.gui import theme
 from runtime.gui.alert_system import notify_alert
 from runtime.capture.window_affinity import (
     apply_capture_exclusion,
@@ -63,8 +64,12 @@ from runtime.storage.database import (
 )
 import config
 
+_READOUT_NAME_STYLE = f"font-size: 10px; color: {theme.TEXT_DIM}; letter-spacing: 1px;"
+_READOUT_VALUE_STYLE = f"font-family: '{theme.MONO_FONT}'; font-size: 11px; font-weight: bold; color: {theme.CYAN};"
+_ALERT_HEADER_STYLE = f"color: {theme.AMBER}; font-size: 11px; font-weight: bold; letter-spacing: 1px;"
 
-def _build_shield_icon(colour: str = "#22C55E", size: int = 64) -> QIcon:
+
+def _build_shield_icon(colour: str = theme.CYAN, size: int = 64) -> QIcon:
     """Paint a simple shield glyph for the window/taskbar icon (no asset file needed)."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.GlobalColor.transparent)
@@ -90,7 +95,7 @@ def _build_shield_icon(colour: str = "#22C55E", size: int = 64) -> QIcon:
     check.moveTo(size * 0.32, size * 0.5)
     check.lineTo(size * 0.45, size * 0.63)
     check.lineTo(size * 0.70, size * 0.35)
-    painter.setPen(QPen(QColor("#0B0E14"), max(2, size // 12), cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
+    painter.setPen(QPen(QColor(theme.BG), max(2, size // 12), cap=Qt.PenCapStyle.RoundCap, join=Qt.PenJoinStyle.RoundJoin))
     painter.drawPath(check)
 
     painter.end()
@@ -196,11 +201,11 @@ class MainWindow(QMainWindow):
         history_header = QHBoxLayout()
         history_header.setContentsMargins(8, 6, 8, 3)
         history_header.setSpacing(6)
-        history_title = QLabel("Session History")
-        history_title.setStyleSheet("color: #888; font-size: 10px;")
+        history_title = QLabel("SESSION HISTORY")
+        history_title.setStyleSheet(theme.SECTION_TITLE_STYLE)
         history_header.addWidget(history_title)
         history_hint = QLabel("Double-click a session to view its alert screenshots")
-        history_hint.setStyleSheet("color: #555; font-size: 10px;")
+        history_hint.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
         history_header.addWidget(history_hint)
         history_header.addStretch()
         self._btn_export_session = QPushButton("Export CSV")
@@ -243,19 +248,16 @@ class MainWindow(QMainWindow):
         preview_header = QHBoxLayout()
         preview_header.setSpacing(5)
         live_dot = QLabel("●")
-        live_dot.setStyleSheet("color: #22C55E; font-size: 8px;")
+        live_dot.setStyleSheet(f"color: {theme.GREEN}; font-size: 8px;")
         preview_header.addWidget(live_dot)
         preview_label = QLabel("LIVE PREVIEW")
-        preview_label.setStyleSheet(
-            "color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 1px;"
-        )
+        preview_label.setStyleSheet(theme.SECTION_TITLE_STYLE)
         preview_header.addWidget(preview_label)
         preview_header.addStretch()
         left_layout.addLayout(preview_header)
 
-        # Video widget, framed with a rounded card border
-        video_frame = QWidget()
-        video_frame.setObjectName("video_frame")
+        # Video widget, framed with a chamfered HUD border
+        video_frame = theme.HudCard(fill="#000000")
         video_frame_layout = QVBoxLayout(video_frame)
         video_frame_layout.setContentsMargins(2, 2, 2, 2)
         self._video_widget = VideoWidget()
@@ -266,7 +268,8 @@ class MainWindow(QMainWindow):
         # Low-light warning bar (hidden until triggered)
         self._low_light_bar = QLabel("  Low light detected — detection accuracy may be reduced")
         self._low_light_bar.setStyleSheet(
-            "background-color: #5C3500; color: #FFCC66; font-size: 10px; padding: 2px 6px; border-radius: 5px;"
+            f"background-color: {theme.rgba(theme.AMBER, 0.1)}; color: {theme.AMBER}; "
+            f"border: 1px solid {theme.AMBER}; font-size: 10px; padding: 2px 6px;"
         )
         self._low_light_bar.setVisible(False)
         left_layout.addWidget(self._low_light_bar)
@@ -348,39 +351,35 @@ class MainWindow(QMainWindow):
         fps_container = QHBoxLayout()
         fps_container.setSpacing(4)
         fps_icon = QLabel("FPS")
-        fps_icon.setStyleSheet("font-size: 10px; color: #666666;")
+        fps_icon.setStyleSheet(_READOUT_NAME_STYLE)
         self._fps_label = QLabel("—")
-        self._fps_label.setStyleSheet(
-            "font-size: 11px; font-weight: 500; color: #aaaaaa; min-width: 24px;"
-        )
+        self._fps_label.setStyleSheet(f"{_READOUT_VALUE_STYLE} min-width: 24px;")
         fps_container.addWidget(fps_icon)
         fps_container.addWidget(self._fps_label)
 
         # Vertical separator
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.VLine)
-        sep.setStyleSheet("color: #333333;")
+        sep.setStyleSheet(f"color: {theme.BORDER};")
 
         # Faces readout
         faces_container = QHBoxLayout()
         faces_container.setSpacing(4)
         faces_icon = QLabel("Faces")
-        faces_icon.setStyleSheet("font-size: 10px; color: #666666;")
+        faces_icon.setStyleSheet(_READOUT_NAME_STYLE)
         self._faces_label = QLabel("—")
-        self._faces_label.setStyleSheet(
-            "font-size: 11px; font-weight: 500; color: #aaaaaa; min-width: 18px;"
-        )
+        self._faces_label.setStyleSheet(f"{_READOUT_VALUE_STYLE} min-width: 18px;")
         faces_container.addWidget(faces_icon)
         faces_container.addWidget(self._faces_label)
 
         # Another separator
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.VLine)
-        sep2.setStyleSheet("color: #333333;")
+        sep2.setStyleSheet(f"color: {theme.BORDER};")
 
         # API response time readout
         self._lbl_api_ms = QLabel("API: — ms")
-        self._lbl_api_ms.setStyleSheet("font-weight: bold; padding: 4px 12px;")
+        self._lbl_api_ms.setStyleSheet(f"{_READOUT_VALUE_STYLE} padding: 4px 12px;")
 
         control_bar.addLayout(fps_container)
         control_bar.addWidget(sep)
@@ -392,18 +391,17 @@ class MainWindow(QMainWindow):
 
     def _build_mini_bar(self) -> QWidget:
         """Compact status + Start/Stop/Exit row, shown only in Mini mode."""
-        bar = QWidget()
-        bar.setObjectName("card")
+        bar = theme.HudCard()
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(8)
 
         self._mini_status_dot = QLabel("●")
-        self._mini_status_dot.setStyleSheet("color: #6B7280; font-size: 10px;")
+        self._mini_status_dot.setStyleSheet(f"color: {theme.TEXT_MUTED}; font-size: 10px;")
         layout.addWidget(self._mini_status_dot)
 
         self._mini_status_label = QLabel("Idle")
-        self._mini_status_label.setStyleSheet("color: #9CA3AF; font-size: 11px;")
+        self._mini_status_label.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px;")
         layout.addWidget(self._mini_status_label)
         layout.addStretch()
 
@@ -443,17 +441,16 @@ class MainWindow(QMainWindow):
 
     def _build_mini_alert_banner(self) -> QWidget:
         """One-line alert with an Acknowledge button, used in Mini mode instead of the full alert card."""
-        banner = QWidget()
-        banner.setObjectName("alert_card")
+        banner = theme.HudCard(accent=theme.AMBER, fill=theme.AMBER_FILL)
         layout = QHBoxLayout(banner)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
 
         icon_label = QLabel("⚠")
-        icon_label.setStyleSheet("color: #F59E0B; font-size: 13px;")
+        icon_label.setStyleSheet(f"color: {theme.AMBER}; font-size: 13px;")
         layout.addWidget(icon_label)
         header_label = QLabel("Deepfake detected")
-        header_label.setStyleSheet("color: #FBBF24; font-size: 11px; font-weight: bold;")
+        header_label.setStyleSheet(_ALERT_HEADER_STYLE)
         layout.addWidget(header_label)
         layout.addStretch()
 
@@ -477,18 +474,17 @@ class MainWindow(QMainWindow):
         just an abstract percentage. Replaces the confidence gauge as the
         primary visual in Mini mode (see _enter_mini_mode/_exit_mini_mode).
         """
-        card = QWidget()
-        card.setObjectName("card")
+        card = theme.HudCard()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
         title = QLabel("LIVE FACES")
-        title.setStyleSheet("color: #6B7280; font-size: 11px; font-weight: 600; letter-spacing: 0.5px;")
+        title.setStyleSheet(theme.SECTION_TITLE_STYLE)
         layout.addWidget(title)
 
         self._mini_faces_empty_label = QLabel("No face detected")
-        self._mini_faces_empty_label.setStyleSheet("color: #6B7280; font-size: 11px; font-style: italic;")
+        self._mini_faces_empty_label.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 11px; font-style: italic;")
         layout.addWidget(self._mini_faces_empty_label)
 
         strip_layout = QHBoxLayout()
@@ -539,16 +535,15 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self._session_info_card)
 
         # System Log Card
-        self._log_card = QWidget()
+        self._log_card = theme.HudCard()
         log_card = self._log_card
-        log_card.setObjectName("card")
         log_card_layout = QVBoxLayout(log_card)
         log_card_layout.setContentsMargins(8, 9, 8, 8)
         log_card_layout.setSpacing(5)
 
         log_header = QHBoxLayout()
         log_title = QLabel("SYSTEM LOG")
-        log_title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
+        log_title.setStyleSheet(theme.SECTION_TITLE_STYLE)
         log_header.addWidget(log_title)
         log_header.addStretch()
         self._btn_clear_log = QPushButton("Clear")
@@ -577,8 +572,7 @@ class MainWindow(QMainWindow):
 
     def _build_confidence_card(self) -> QWidget:
         """Build confidence score card."""
-        card = QWidget()
-        card.setObjectName("card")
+        card = theme.HudCard()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 9, 8, 6)
         layout.setSpacing(3)
@@ -586,14 +580,14 @@ class MainWindow(QMainWindow):
         # Title row + info icon
         title_row = QHBoxLayout()
         title = QLabel("CONFIDENCE SCORE")
-        title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
+        title.setStyleSheet(theme.SECTION_TITLE_STYLE)
         title_row.addWidget(title)
         title_row.addStretch()
         info_icon = QLabel("ⓘ")
-        info_icon.setStyleSheet("color: #4B5563; font-size: 11px;")
+        info_icon.setStyleSheet(f"color: {theme.CYAN_DIM}; font-size: 11px;")
         info_icon.setToolTip(
             "Confidence that the most suspicious face currently on screen is a deepfake, "
-            "from the BitMind API's raw score (not smoothed)."
+            "from the BitMind API's raw score (not smoothed). The magenta tick marks the deepfake threshold."
         )
         title_row.addWidget(info_icon)
         layout.addLayout(title_row)
@@ -608,19 +602,18 @@ class MainWindow(QMainWindow):
 
     def _build_detection_analysis_card(self) -> QWidget:
         """Build the Detection Analysis card: verdict + full bullet-point reasoning for the latest result."""
-        card = QWidget()
-        card.setObjectName("card")
+        card = theme.HudCard()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 9, 8, 9)
         layout.setSpacing(6)
 
         # Title
         title_row = QHBoxLayout()
-        icon = QLabel("🔍")
-        icon.setStyleSheet("font-size: 11px;")
+        icon = QLabel("◈")
+        icon.setStyleSheet(f"color: {theme.CYAN}; font-size: 11px;")
         title_row.addWidget(icon)
         title = QLabel("DETECTION ANALYSIS")
-        title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px;")
+        title.setStyleSheet(theme.SECTION_TITLE_STYLE)
         title_row.addWidget(title)
         title_row.addStretch()
         layout.addLayout(title_row)
@@ -632,18 +625,20 @@ class MainWindow(QMainWindow):
         self._analysis_verdict_badge.setFixedHeight(18)
         verdict_row.addWidget(self._analysis_verdict_badge)
         self._analysis_pct_label = QLabel("")
-        self._analysis_pct_label.setStyleSheet("color: #E5E7EB; font-size: 12px; font-weight: bold;")
+        self._analysis_pct_label.setStyleSheet(
+            f"color: {theme.TEXT}; font-family: '{theme.MONO_FONT}'; font-size: 12px; font-weight: bold;"
+        )
         verdict_row.addWidget(self._analysis_pct_label)
         verdict_row.addStretch()
         self._analysis_time_label = QLabel("")
-        self._analysis_time_label.setStyleSheet("color: #6B7280; font-size: 9px;")
+        self._analysis_time_label.setStyleSheet(f"color: {theme.TEXT_DIM}; font-family: '{theme.MONO_FONT}'; font-size: 9px;")
         verdict_row.addWidget(self._analysis_time_label)
         layout.addLayout(verdict_row)
 
         # Empty-state placeholder, shown until the first result arrives
         self._analysis_empty_label = QLabel("No analysis yet — start detection to see results.")
         self._analysis_empty_label.setWordWrap(True)
-        self._analysis_empty_label.setStyleSheet("color: #6B7280; font-size: 10px; font-style: italic;")
+        self._analysis_empty_label.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 10px; font-style: italic;")
         layout.addWidget(self._analysis_empty_label)
 
         # Fixed pool of bullet rows (max reasons a DEEPFAKE result can carry
@@ -653,12 +648,12 @@ class MainWindow(QMainWindow):
         for _ in range(self._ANALYSIS_MAX_REASONS):
             row_layout = QHBoxLayout()
             row_layout.setSpacing(5)
-            bullet_icon = QLabel("●")
-            bullet_icon.setStyleSheet("color: #4B5563; font-size: 7px;")
+            bullet_icon = QLabel("▸")
+            bullet_icon.setStyleSheet(f"color: {theme.CYAN}; font-size: 9px;")
             bullet_icon.setFixedWidth(9)
             bullet_text = QLabel("")
             bullet_text.setWordWrap(True)
-            bullet_text.setStyleSheet("color: #C4C9D4; font-size: 10px;")
+            bullet_text.setStyleSheet(f"color: {theme.TEXT}; font-size: 10px;")
             row_layout.addWidget(bullet_icon, 0, Qt.AlignmentFlag.AlignTop)
             row_layout.addWidget(bullet_text, 1)
             layout.addLayout(row_layout)
@@ -699,12 +694,8 @@ class MainWindow(QMainWindow):
         self._analysis_time_label.setVisible(True)
 
         is_fake = result.risk_level == "DEEPFAKE"
-        badge_bg, badge_fg = ("#EF4444", "#2D0A0A") if is_fake else ("#22C55E", "#052E16")
         self._analysis_verdict_badge.setText(f"  {result.risk_level}  ")
-        self._analysis_verdict_badge.setStyleSheet(
-            f"background-color: {badge_bg}; color: {badge_fg}; font-size: 9px; "
-            f"font-weight: bold; border-radius: 9px;"
-        )
+        self._analysis_verdict_badge.setStyleSheet(theme.badge_style(theme.RED if is_fake else theme.GREEN, 9))
         self._analysis_pct_label.setText(f"{result.p_fake_raw * 100:.1f}%")
 
         reasons = result.explanation or [
@@ -720,8 +711,7 @@ class MainWindow(QMainWindow):
 
     def _build_alert_card(self) -> QWidget:
         """Build alert card (shown when alert triggered)."""
-        card = QWidget()
-        card.setObjectName("alert_card")
+        card = theme.HudCard(accent=theme.AMBER, fill=theme.AMBER_FILL)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 9, 8, 9)
         layout.setSpacing(8)
@@ -729,11 +719,9 @@ class MainWindow(QMainWindow):
         # Header
         header_layout = QHBoxLayout()
         icon_label = QLabel("⚠")
-        icon_label.setStyleSheet("color: #F59E0B; font-size: 13px;")
+        icon_label.setStyleSheet(f"color: {theme.AMBER}; font-size: 13px;")
         header_label = QLabel("Deepfake detected")
-        header_label.setStyleSheet(
-            "color: #FBBF24; font-size: 11px; font-weight: bold;"
-        )
+        header_label.setStyleSheet(_ALERT_HEADER_STYLE)
         header_layout.addWidget(icon_label)
         header_layout.addWidget(header_label)
         header_layout.addStretch()
@@ -743,7 +731,7 @@ class MainWindow(QMainWindow):
         # above this one — this banner is just the dismissible action prompt.
         hint_label = QLabel("See Detection Analysis above for the full reasoning.")
         hint_label.setWordWrap(True)
-        hint_label.setStyleSheet("color: #D8B675; font-size: 10px;")
+        hint_label.setStyleSheet(f"color: {theme.rgba(theme.AMBER, 0.75)}; font-size: 10px;")
         layout.addWidget(hint_label)
 
         # Acknowledge button
@@ -761,32 +749,31 @@ class MainWindow(QMainWindow):
         row_layout.setContentsMargins(0, 5, 0, 5)
         row_layout.setSpacing(6)
         icon_label = QLabel(icon)
-        icon_label.setStyleSheet("color: #4B5563; font-size: 11px;")
+        icon_label.setStyleSheet(f"color: {theme.CYAN_DIM}; font-size: 11px;")
         icon_label.setFixedWidth(14)
         row_layout.addWidget(icon_label)
         label = QLabel(label_text)
-        label.setStyleSheet("color: #888; font-size: 10px;")
+        label.setStyleSheet(f"color: {theme.TEXT_DIM}; font-size: 10px;")
         row_layout.addWidget(label)
         row_layout.addStretch()
         value = QLabel("")
-        value.setStyleSheet("color: #E5E7EB; font-size: 10px;")
+        value.setStyleSheet(f"color: {theme.TEXT}; font-family: '{theme.MONO_FONT}'; font-size: 10px;")
         row_layout.addWidget(value)
         return row_layout, value
 
     def _build_session_info_card(self) -> QWidget:
         """Build session info card."""
-        card = QWidget()
-        card.setObjectName("card")
+        card = theme.HudCard()
         layout = QVBoxLayout(card)
         layout.setContentsMargins(8, 9, 8, 9)
         layout.setSpacing(0)
 
         # Title
         title = QLabel("SESSION INFO")
-        title.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; margin-bottom: 4px;")
+        title.setStyleSheet(f"{theme.SECTION_TITLE_STYLE} margin-bottom: 4px;")
         layout.addWidget(title)
 
-        status_row, self._status_value = self._build_info_row("👤", "Status")
+        status_row, self._status_value = self._build_info_row("◉", "Status")
         layout.addLayout(status_row)
 
         duration_row, self._duration_value = self._build_info_row("◷", "Duration")
@@ -846,21 +833,23 @@ class MainWindow(QMainWindow):
         """Build the status bar: capture source, then live model / API key / DB indicators and the threshold."""
         status_bar = self.statusBar()
         status_bar.setStyleSheet(
-            "background-color: #0B0E14; color: #6B7280; font-size: 10px; border-top: 1px solid #1F2430;"
+            f"background-color: {theme.BG}; color: {theme.TEXT_DIM}; font-family: '{theme.MONO_FONT}'; "
+            f"font-size: 10px; border-top: 1px solid {theme.CYAN_DIM};"
         )
 
-        lbl_source = QLabel("🎥  Source: Primary screen")
-        lbl_source.setStyleSheet("color: #6B7280;")
+        lbl_source = QLabel("◉  Source: Primary screen")
+        lbl_source.setStyleSheet(f"color: {theme.TEXT_DIM};")
         self._sb_model = QLabel()
         self._sb_api = QLabel()
         self._sb_db = QLabel()
         self._sb_threshold = QLabel()
-        self._sb_threshold.setStyleSheet("color: #6B7280;")
+        # Magenta, like the threshold tick on the confidence gauge
+        self._sb_threshold.setStyleSheet(f"color: {theme.MAGENTA};")
 
         for i, label in enumerate((lbl_source, self._sb_model, self._sb_api, self._sb_db, self._sb_threshold)):
             if i:
                 sep = QLabel("│")
-                sep.setStyleSheet("color: #2A2E38;")
+                sep.setStyleSheet(f"color: {theme.BORDER};")
                 status_bar.addPermanentWidget(sep)
             status_bar.addPermanentWidget(label)
 
@@ -873,7 +862,7 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _set_indicator(label: QLabel, ok: bool | None, text: str):
         """Show a status-bar indicator as ✓ (ok), ✗ (failed) or ◌ (still pending)."""
-        icon, colour = {True: ("✓", "#22C55E"), False: ("✗", "#EF4444"), None: ("◌", "#6B7280")}[ok]
+        icon, colour = {True: ("✓", theme.GREEN), False: ("✗", theme.RED), None: ("◌", theme.GREY)}[ok]
         label.setText(f"{icon}  {text}")
         label.setStyleSheet(f"color: {colour};")
 
@@ -918,7 +907,7 @@ class MainWindow(QMainWindow):
             dt_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
             )
-            dt_item.setForeground(QColor("#ddd"))
+            dt_item.setForeground(QColor(theme.TEXT))
             self._history_table.setItem(row, 0, dt_item)
 
             # Col 1 — Duration
@@ -926,7 +915,7 @@ class MainWindow(QMainWindow):
             dur_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
             )
-            dur_item.setForeground(QColor("#ddd"))
+            dur_item.setForeground(QColor(theme.TEXT))
             self._history_table.setItem(row, 1, dur_item)
 
             # Col 2 — Alerts
@@ -934,35 +923,14 @@ class MainWindow(QMainWindow):
             alert_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
             )
-            alert_item.setForeground(QColor("#ddd"))
+            alert_item.setForeground(QColor(theme.TEXT))
             self._history_table.setItem(row, 2, alert_item)
 
             # Col 3 — Result badge
             result_text = row_data["result"]
             badge = QLabel(result_text)
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            if result_text == "Deepfake detected":
-                badge.setStyleSheet(
-                    """
-                    background-color: #FCEBEB;
-                    color: #A32D2D;
-                    border-radius: 3px;
-                    padding: 1px 6px;
-                    font-size: 10px;
-                    font-weight: 500;
-                """
-                )
-            else:
-                badge.setStyleSheet(
-                    """
-                    background-color: #EAF3DE;
-                    color: #3B6D11;
-                    border-radius: 3px;
-                    padding: 1px 6px;
-                    font-size: 10px;
-                    font-weight: 500;
-                """
-                )
+            badge.setStyleSheet(theme.badge_style(theme.RED if result_text == "Deepfake detected" else theme.GREEN))
             # Wrap badge in a centered container. It lets clicks through so
             # selecting or double-clicking the Result cell works like any other cell.
             container = QWidget()
@@ -1038,6 +1006,7 @@ class MainWindow(QMainWindow):
     def _on_open_settings(self):
         if SettingsDialog(parent=self).exec() == QDialog.DialogCode.Accepted:
             self._refresh_threshold_label()
+            self._gauge.update()
             self._session_log_event(
                 "INFO", f"Settings saved (threshold {config.FAKE_THRESHOLD * 100:.0f}%)."
             )
@@ -1055,12 +1024,12 @@ class MainWindow(QMainWindow):
         state: one of "Idle", "Initializing", "Detecting", "Alert", "Degraded", "Stopping".
         """
         configs = {
-            "Idle":         ("#6B7280", "#9CA3AF", "Idle"),
-            "Initializing": ("#F59E0B", "#FBBF24", "Initializing…"),
-            "Detecting":    ("#22C55E", "#4ADE80", "Active"),
-            "Alert":        ("#EF4444", "#F87171", "Alert"),
-            "Degraded":     ("#F59E0B", "#FBBF24", "Degraded — Reconnecting"),
-            "Stopping":     ("#F59E0B", "#FBBF24", "Stopping…"),
+            "Idle":         (theme.TEXT_MUTED, theme.TEXT_DIM, "Idle"),
+            "Initializing": (theme.AMBER, theme.AMBER, "Initializing…"),
+            "Detecting":    (theme.GREEN, theme.GREEN, "Active"),
+            "Alert":        (theme.RED, theme.RED, "Alert"),
+            "Degraded":     (theme.AMBER, theme.AMBER, "Degraded — Reconnecting"),
+            "Stopping":     (theme.AMBER, theme.AMBER, "Stopping…"),
         }
         dot_color, text_color, label = configs.get(state, configs["Idle"])
         self._status_state = state
@@ -1378,6 +1347,7 @@ class MainWindow(QMainWindow):
         """
         self._alert_count += len(peaks)
         self._show_alert(True)
+        (self._mini_alert_banner if self._mini_mode else self._alert_card).pulse()
         self._current_alert_active = True
         self._set_status("Alert")
         notify_alert(self, peaks[0])
@@ -1426,237 +1396,248 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _get_stylesheet() -> str:
         """Return the complete stylesheet for the application."""
-        return """
-QMainWindow, QWidget#central {
-    background-color: #0B0E14;
-    color: #E5E7EB;
-    font-family: 'Segoe UI', sans-serif;
-    font-size: 12px;
-}
+        return f"""
+* {{
+    font-family: '{theme.DISPLAY_FONT}', 'Segoe UI', sans-serif;
+}}
 
-QSplitter::handle {
+QMainWindow, QWidget#central {{
+    background-color: {theme.BG};
+    color: {theme.TEXT};
+    font-size: 12px;
+}}
+
+QSplitter::handle {{
     background-color: transparent;
-}
+}}
 
 /* Right sidebar scroll area */
-QScrollArea, QScrollArea > QWidget > QWidget {
+QScrollArea, QScrollArea > QWidget > QWidget {{
     background-color: transparent;
     border: none;
-}
+}}
 
-QScrollBar:vertical {
+QScrollBar:vertical {{
     background: transparent;
-    width: 8px;
+    width: 6px;
     margin: 0;
-}
-QScrollBar::handle:vertical {
-    background: #262B36;
-    border-radius: 4px;
+}}
+QScrollBar::handle:vertical {{
+    background: {theme.CYAN_DIM};
     min-height: 24px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #333A48;
-}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {theme.CYAN};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     height: 0;
-}
-QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+}}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
     background: transparent;
-}
+}}
 
-/* Buttons */
-QPushButton#btn_start {
-    background-color: #22C55E;
-    border: 1px solid #22C55E;
-    color: #05170C;
-    border-radius: 14px;
+QToolTip {{
+    background-color: {theme.SURFACE};
+    color: {theme.CYAN};
+    border: 1px solid {theme.CYAN_DIM};
+    padding: 4px;
+}}
+
+/* Buttons: sharp neon outlines that fill in on hover */
+QPushButton#btn_start {{
+    background-color: {theme.rgba(theme.GREEN, 0.12)};
+    border: 1px solid {theme.GREEN};
+    color: {theme.GREEN};
     padding: 5px 14px;
     font-size: 11px;
     font-weight: bold;
-}
+    letter-spacing: 1px;
+}}
 
-QPushButton#btn_start:hover {
-    background-color: #34D871;
-}
+QPushButton#btn_start:hover {{
+    background-color: {theme.rgba(theme.GREEN, 0.28)};
+}}
 
-QPushButton#btn_start:pressed {
-    background-color: #16A34A;
-}
+QPushButton#btn_start:pressed {{
+    background-color: {theme.rgba(theme.GREEN, 0.45)};
+}}
 
-QPushButton#btn_start:disabled {
-    background-color: #1B3324;
-    border-color: #1B3324;
-    color: #4B5563;
-}
+QPushButton#btn_start:disabled {{
+    background-color: transparent;
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_MUTED};
+}}
 
-QPushButton#btn_stop {
-    background-color: #EF4444;
-    border: 1px solid #EF4444;
-    color: #200606;
-    border-radius: 14px;
+QPushButton#btn_stop {{
+    background-color: {theme.rgba(theme.RED, 0.12)};
+    border: 1px solid {theme.RED};
+    color: {theme.RED};
     padding: 5px 14px;
     font-size: 11px;
     font-weight: bold;
-}
+    letter-spacing: 1px;
+}}
 
-QPushButton#btn_stop:hover {
-    background-color: #F45B5B;
-}
+QPushButton#btn_stop:hover {{
+    background-color: {theme.rgba(theme.RED, 0.28)};
+}}
 
-QPushButton#btn_stop:pressed {
-    background-color: #DC2626;
-}
+QPushButton#btn_stop:pressed {{
+    background-color: {theme.rgba(theme.RED, 0.45)};
+}}
 
-QPushButton#btn_stop:disabled {
-    background-color: #331414;
-    border-color: #331414;
-    color: #4B5563;
-}
+QPushButton#btn_stop:disabled {{
+    background-color: transparent;
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_MUTED};
+}}
 
-QPushButton#btn_screenshot, QPushButton#btn_clear_zone {
-    background-color: #12151C;
-    border: 1px solid #262B36;
-    color: #C4C9D4;
-    border-radius: 14px;
+QPushButton#btn_screenshot, QPushButton#btn_clear_zone {{
+    background-color: transparent;
+    border: 1px solid {theme.CYAN_DIM};
+    color: {theme.CYAN};
     padding: 5px 14px;
     font-size: 11px;
-}
+}}
 
-QPushButton#btn_screenshot:hover, QPushButton#btn_clear_zone:hover {
-    background-color: #1B1F29;
-    border-color: #333A48;
-}
+QPushButton#btn_screenshot:hover, QPushButton#btn_clear_zone:hover {{
+    background-color: {theme.rgba(theme.CYAN, 0.1)};
+    border-color: {theme.CYAN};
+}}
 
-QPushButton#btn_screenshot:pressed, QPushButton#btn_clear_zone:pressed {
-    background-color: #21262E;
-}
+QPushButton#btn_screenshot:pressed, QPushButton#btn_clear_zone:pressed {{
+    background-color: {theme.rgba(theme.CYAN, 0.22)};
+}}
 
-QPushButton#btn_clear_zone:disabled {
-    background-color: #12151C;
-    border: 1px solid #1B1F29;
-    color: #3A4150;
-}
+QPushButton#btn_clear_zone:disabled {{
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_MUTED};
+}}
 
-QPushButton#btn_acknowledge {
-    background-color: #F59E0B;
-    border: 1px solid #F59E0B;
-    color: #241A02;
-    border-radius: 13px;
+QPushButton#btn_acknowledge {{
+    background-color: {theme.rgba(theme.AMBER, 0.14)};
+    border: 1px solid {theme.AMBER};
+    color: {theme.AMBER};
     padding: 5px 12px;
     font-size: 11px;
     font-weight: bold;
-}
+    letter-spacing: 1px;
+}}
 
-QPushButton#btn_acknowledge:hover {
-    background-color: #FBB63A;
-}
+QPushButton#btn_acknowledge:hover {{
+    background-color: {theme.rgba(theme.AMBER, 0.3)};
+}}
 
 QPushButton#btn_clear_log, QPushButton#btn_export_session, QPushButton#btn_delete_session,
-QPushButton#btn_clear_history {
+QPushButton#btn_clear_history {{
     background-color: transparent;
-    border: 1px solid #262B36;
-    color: #8A93A3;
-    border-radius: 10px;
+    border: 1px solid {theme.BORDER};
+    color: {theme.TEXT_DIM};
     padding: 2px 10px;
     font-size: 11px;
-}
-QPushButton#btn_clear_log:hover, QPushButton#btn_export_session:hover {
-    background-color: #1B1F29;
-    border-color: #333A48;
-    color: #E5E7EB;
-}
-QPushButton#btn_export_session:disabled {
-    border-color: #1B1F29;
-    color: #3A4150;
-}
+}}
+QPushButton#btn_clear_log:hover, QPushButton#btn_export_session:hover {{
+    background-color: {theme.rgba(theme.CYAN, 0.08)};
+    border-color: {theme.CYAN_DIM};
+    color: {theme.CYAN};
+}}
+QPushButton#btn_export_session:disabled {{
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_MUTED};
+}}
 
-QPushButton#btn_delete_session {
-    border-color: #3A2020;
-    color: #EF4444;
-}
-QPushButton#btn_delete_session:disabled {
-    border-color: #1B1F29;
-    color: #3A4150;
-}
-QPushButton#btn_delete_session:hover {
-    background-color: #2A1414;
-}
+QPushButton#btn_delete_session {{
+    border-color: {theme.rgba(theme.RED, 0.4)};
+    color: {theme.RED};
+}}
+QPushButton#btn_delete_session:disabled {{
+    border-color: {theme.BORDER};
+    color: {theme.TEXT_MUTED};
+}}
+QPushButton#btn_delete_session:hover {{
+    background-color: {theme.rgba(theme.RED, 0.12)};
+}}
 
-QPushButton#btn_clear_history:hover {
-    background-color: #2A1414;
-    border-color: #EF4444;
-    color: #EF4444;
-}
-
-/* Cards */
-QWidget#card {
-    background-color: #12151C;
-    border: 1px solid #1F2430;
-    border-radius: 14px;
-}
-
-QWidget#video_frame {
-    background-color: #000000;
-    border: 1px solid #1F2430;
-    border-radius: 14px;
-}
-
-QWidget#alert_card {
-    background-color: #241B08;
-    border: 1px solid #F59E0B;
-    border-radius: 14px;
-}
+QPushButton#btn_clear_history:hover {{
+    background-color: {theme.rgba(theme.RED, 0.12)};
+    border-color: {theme.RED};
+    color: {theme.RED};
+}}
 
 /* Table */
-QTableWidget#history_table {
-    background-color: #0B0E14;
-    color: #C4C9D4;
+QTableWidget#history_table {{
+    background-color: {theme.BG};
+    color: {theme.TEXT};
     border: none;
-    gridline-color: #1F2430;
-    alternate-background-color: #0B0E14;
-}
+    gridline-color: {theme.BORDER};
+    alternate-background-color: {theme.BG};
+}}
 
-QTableWidget#history_table::item {
+QTableWidget#history_table::item {{
     padding: 4px 6px;
-    border-bottom: 1px solid #1F2430;
-}
+    border-bottom: 1px solid {theme.BORDER};
+}}
 
-QTableWidget#history_table::item:selected {
-    background-color: #1B1F29;
-}
+QTableWidget#history_table::item:selected {{
+    background-color: {theme.rgba(theme.CYAN, 0.1)};
+}}
 
-QHeaderView::section {
-    background-color: transparent;
-    color: #6B7280;
-    font-size: 10px;
+QHeaderView {{
+    background-color: {theme.BG};
     border: none;
-    border-bottom: 1px solid #1F2430;
+}}
+
+QHeaderView::section {{
+    background-color: transparent;
+    color: {theme.TEXT_DIM};
+    font-size: 10px;
+    letter-spacing: 1px;
+    border: none;
+    border-bottom: 1px solid {theme.CYAN_DIM};
     padding: 3px 6px;
-}
+}}
 
 /* Status Bar */
-QStatusBar {
-    background-color: #0B0E14;
-}
+QStatusBar {{
+    background-color: {theme.BG};
+}}
 
-QStatusBar::item {
+QStatusBar::item {{
     border: none;
-}
+}}
 
 /* Video Widget */
-QWidget#video_widget {
+QWidget#video_widget {{
     background-color: #000000;
-}
+}}
 
 /* Session Log */
-QTextEdit#session_log {
+QTextEdit#session_log {{
     background-color: transparent;
-    color: #C4C9D4;
+    color: {theme.TEXT};
     border: none;
-    font-family: 'Consolas', monospace;
+    font-family: '{theme.MONO_FONT}', monospace;
     font-size: 10px;
     padding: 2px;
-}
+}}
+
+/* Confirmation boxes (Clear All) */
+QMessageBox {{
+    background-color: {theme.BG};
+}}
+QMessageBox QLabel {{
+    color: {theme.TEXT};
+}}
+QMessageBox QPushButton {{
+    background-color: transparent;
+    border: 1px solid {theme.CYAN_DIM};
+    color: {theme.CYAN};
+    padding: 4px 16px;
+    min-width: 60px;
+}}
+QMessageBox QPushButton:hover {{
+    background-color: {theme.rgba(theme.CYAN, 0.1)};
+}}
 """
 
     # -- Detection zone -------------------------------------------------------

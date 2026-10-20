@@ -97,7 +97,8 @@ window. All three indicators should show a green tick:
 
   CONFIDENCE SCORE (right)
       A gauge showing the deepfake score of the most suspicious
-      face on screen.
+      face on screen. The magenta tick on it marks the deepfake
+      threshold: a score past that tick is DEEPFAKE.
 
   DETECTION ANALYSIS (right)
       The verdict for that same face (REAL or DEEPFAKE), its
@@ -178,8 +179,8 @@ verdict rests on BitMind's own assessment.
 ---------
 When a face has been DEEPFAKE for 3 frames in a row, the app
 raises an alert for it:
-  - an orange "Deepfake detected" card appears on the right
-    (a one-line banner in Mini Mode);
+  - an amber "Deepfake detected" card appears on the right and
+    its border flashes (a one-line banner in Mini Mode);
   - the status changes to Alert and the taskbar icon flashes;
   - a beep sounds and a desktop notification shows the score
     (both can be turned off in Settings);

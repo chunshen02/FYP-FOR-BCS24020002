@@ -12,10 +12,14 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtCore import Qt
 
+from runtime.gui import theme
+
 _RISK_BORDER = {
-    "REAL": "#22C55E",
-    "DEEPFAKE": "#EF4444",
+    "REAL": theme.GREEN,
+    "DEEPFAKE": theme.RED,
 }
+_IMAGE_STYLE = "border: 2px solid {colour}; background-color: #000000;"
+_PCT_STYLE = f"color: {{colour}}; font-family: '{theme.MONO_FONT}'; font-size: 10px; font-weight: bold;"
 
 
 class FaceThumbnail(QWidget):
@@ -31,14 +35,12 @@ class FaceThumbnail(QWidget):
         self._image_label.setFixedSize(size, size)
         self._image_label.setScaledContents(True)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setStyleSheet(
-            "border: 3px solid #2A2E38; border-radius: 8px; background-color: #000000;"
-        )
+        self._image_label.setStyleSheet(_IMAGE_STYLE.format(colour=theme.BORDER))
         layout.addWidget(self._image_label)
 
         self._pct_label = QLabel("")
         self._pct_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._pct_label.setStyleSheet("color: #6B7280; font-size: 10px; font-weight: bold;")
+        self._pct_label.setStyleSheet(_PCT_STYLE.format(colour=theme.GREY))
         layout.addWidget(self._pct_label)
 
         self.setVisible(False)
@@ -50,12 +52,10 @@ class FaceThumbnail(QWidget):
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
         self._image_label.setPixmap(QPixmap.fromImage(qimg))
 
-        colour = _RISK_BORDER.get(risk_level, "#6B7280")
-        self._image_label.setStyleSheet(
-            f"border: 3px solid {colour}; border-radius: 8px; background-color: #000000;"
-        )
+        colour = _RISK_BORDER.get(risk_level, theme.GREY)
+        self._image_label.setStyleSheet(_IMAGE_STYLE.format(colour=colour))
         self._pct_label.setText(f"{p_fake * 100:.0f}%")
-        self._pct_label.setStyleSheet(f"color: {colour}; font-size: 10px; font-weight: bold;")
+        self._pct_label.setStyleSheet(_PCT_STYLE.format(colour=colour))
         self.setVisible(True)
 
     def clear(self):

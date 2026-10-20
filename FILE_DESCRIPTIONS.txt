@@ -218,13 +218,15 @@ and background threads together. Responsibilities include:
     alert card, session info card, system log), session history
     table, and status bar. The status bar shows live indicators
     for the face model, the API key, and the database, plus the
-    current threshold.
+    current threshold. Every card is a theme.HudCard, and the
+    window's stylesheet is built from the theme.py palette.
   - Starting and stopping DetectionWorker and AlertThread,
     connecting all Qt signals to their respective slots; a
     rejected API key stops the session with a clear message.
   - Updating the confidence gauge, FPS readout, face count,
     API response time, and session duration in real time.
-  - Showing/hiding the alert card, syncing the always-visible
+  - Showing/hiding the alert card (pulsing its border glow for
+    each new alert), syncing the always-visible
     Detection Analysis card with the latest result, and updating
     status indicators (Idle / Initializing / Detecting / Alert /
     Stopping).
@@ -259,14 +261,26 @@ numpy frame and, only when painting, scales it with OpenCV to fit
 the widget (aspect ratio preserved) before converting it to a
 QPixmap, so the full screen resolution is never converted in the
 GUI thread. A QPainter-based paintEvent draws:
-  - Colour-coded bounding boxes (green REAL / red DEEPFAKE)
-    around analyzed faces, and dashed grey placeholder boxes with
-    an "Analyzing..." badge for faces detected but not yet scored.
-  - Confidence badges below each analyzed box showing the raw
-    P_fake percentage, risk label, and a relative timestamp
-    ("just now" / "Ns ago").
+  - Colour-coded HUD boxes (green REAL / red DEEPFAKE) around
+    analyzed faces: a thin outline with bold corner brackets that
+    close in on the face over 0.4 s ("lock-on") when its verdict
+    arrives or changes; and dashed grey placeholder boxes with an
+    "Analyzing..." badge for faces detected but not yet scored.
+  - Confidence badges below each analyzed box, outlined in the
+    verdict colour, showing the raw P_fake percentage, risk label,
+    and a relative timestamp ("just now" / "Ns ago").
   - A blinking red circle with a "DETECTING" label in the
-    top-left corner while a feed is active.
+    top-left corner while a feed is active, a faint scanline
+    overlay, a faint cyan band sweeping down the frame, and cyan
+    corner brackets framing the live frame.
+  - With no feed, a dim grid with a NO SIGNAL banner and a cyan
+    scan line moving down it.
+The lock-on and the sweeping band are timed with
+time.perf_counter() and drawn in the repaints each new frame
+already causes, so they add no repaints of their own. The idle
+scan line has a ~30 Hz timer that runs only while no feed is
+shown and the widget is visible (it stops on the first frame and
+in Mini Mode), and repaints only the strips the line moves through.
 It also supports drag-to-select a rectangular detection zone
 (left-click drag to set, right-click to clear), emitted via the
 region_selected signal, and exposes has_frame so the main window's
@@ -277,11 +291,21 @@ screenshot action can tell whether a feed is active.
 ----------------------------------------------------------------
 Custom-painted semicircular confidence gauge (GaugeWidget) used in
 the Confidence Score card, replacing a plain horizontal progress
-bar. Draws a background track plus a green -> amber -> red gradient
-arc built from short interpolated segments, a marker dot at the
-current value's position, 0%/100% end labels, and a centered
-percentage + status label (e.g. "Real" / "Deepfake" / "—").
-set_value(value, label) updates the reading (0-100) and label.
+bar. Draws the arc as short segments that light up, with a soft
+glow, from green through amber to red up to the current value and
+stay dim beyond it; scale ticks every 10%; a magenta tick at the
+deepfake threshold (config.FAKE_THRESHOLD, repainted when Settings
+change it); 0%/100% end labels; and a centered percentage + status
+label (e.g. "[ REAL ]" / "[ DEEPFAKE ]" / "—").
+set_value(value, label) updates the reading (0-100) and label. A
+new reading is animated: the lit arc and the percentage sweep to
+it over 450 ms (a reading arriving mid-sweep continues smoothly
+from where the arc is), the leading segment fades in so the arc
+moves smoothly, and the glow flashes for 600 ms when the verdict
+changes. While the gauge is hidden (Mini Mode) the reading is set
+at once without animating. The unlit segments, ticks and end labels
+are drawn once into a cached pixmap (redrawn only on resize), so an
+animated frame costs no more than the gauge's former static paint.
 
 ----------------------------------------------------------------
 13. runtime/gui/face_thumbnail.py
@@ -305,7 +329,7 @@ session. Each event type has a distinct colour:
   - DISMISS → green
   - SESSION → grey
   - INFO    → light grey
-  - ERROR   → orange
+  - ERROR   → amber
 Entries are kept to a single line by design — the full DEEPFAKE
 reasoning is surfaced continuously in the Detection Analysis card
 instead. New entries are appended with HTML formatting and the
@@ -354,7 +378,30 @@ and is wrapped in a try/except so that an unavailable
 notification backend never crashes the application.
 
 ----------------------------------------------------------------
-17. runtime/gui/window_affinity.py
+17. runtime/gui/theme.py
+----------------------------------------------------------------
+The single source of the app's cyberpunk HUD look, so every GUI
+module draws from one palette instead of hard-coded colours:
+  - Colour constants: near-black backgrounds, neon cyan accents,
+    magenta for the deepfake threshold and the detection zone, and
+    the verdict hues (green REAL, red DEEPFAKE, amber alert /
+    re-check, grey pending), kept as those hues so the user guide's
+    colour names stay true.
+  - Fonts: Bahnschrift for titles and labels, Consolas for numbers
+    and the log (both ship with Windows, so nothing is bundled).
+  - SECTION_TITLE_STYLE for the spaced-out card titles, rgba() for
+    translucent QSS colours, and badge_style() for the outlined
+    verdict badges.
+  - chamfered_path() and draw_corner_brackets(), the painting
+    helpers behind the cut-corner panels and the HUD face boxes.
+  - HudCard, the panel every card in the main window is built from:
+    a QWidget that paints itself with chamfered corners, a faint
+    border and bright accent strokes on the cut corners. pulse()
+    flashes its border glow three times (1.8 s, then it stops),
+    used to draw the eye to the alert card when an alert fires.
+
+----------------------------------------------------------------
+18. runtime/gui/window_affinity.py
 ----------------------------------------------------------------
 Excludes the app's own window from screen capture at the OS
 compositor level via the Windows SetWindowDisplayAffinity API —
@@ -367,7 +414,7 @@ remains as a defensive fallback for non-Windows platforms or if
 this call fails. No-ops on non-Windows platforms.
 
 ----------------------------------------------------------------
-18. runtime/storage/database.py
+19. runtime/storage/database.py
 ----------------------------------------------------------------
 Local SQLite persistence layer for session event logging. All
 data is stored in a single file on the host machine (DB_PATH
@@ -393,7 +440,7 @@ functions:
     control).
 
 ----------------------------------------------------------------
-19. detection_accuracy.py
+20. detection_accuracy.py
 ----------------------------------------------------------------
 Test script measuring detection accuracy on FaceForensics++ (c23):
 the first ACCURACY_VIDEOS_PER_SUBSET videos of original (real) and
@@ -413,7 +460,7 @@ the confirmed verdict, and sweeps thresholds 0.5-0.9.
 --summary-only re-prints it from the CSV without API calls.
 
 ----------------------------------------------------------------
-20. realtime_performance.py
+21. realtime_performance.py
 ----------------------------------------------------------------
 Test script measuring real-time performance. It plays
 PERF_VIDEOS_PER_SUBSET FaceForensics++ clips per subset in real
@@ -435,7 +482,7 @@ another is running exits at once, because concurrent tests compete
 for the screen, the CPU and BitMind's per-key rate limit.
 
 ----------------------------------------------------------------
-21. screen_face_pipeline.py
+22. screen_face_pipeline.py
 ----------------------------------------------------------------
 Test script for the screen capture -> face crop -> face tracking
 workflow, up to the JPEG the app submits to BitMind. BitMind is not
@@ -460,7 +507,7 @@ JPEG of each face track to results/pipeline_crops_<time>/. Esc in the
 video window stops the run early.
 
 ----------------------------------------------------------------
-22. deepfake_detector.spec
+23. deepfake_detector.spec
 ----------------------------------------------------------------
 PyInstaller build file that packages the app as a Windows program
 (pyinstaller deepfake_detector.spec --noconfirm). It produces a

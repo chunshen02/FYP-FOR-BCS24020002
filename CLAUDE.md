@@ -76,6 +76,7 @@ runtime/
     session_log.py               # In-session event log panel
     dialogs.py                   # Save/discard, evidence, settings and first-run Quick Start dialogs
     alert_system.py              # Taskbar flash / beep / desktop notification on alert
+    theme.py                     # Cyberpunk HUD palette + fonts, HudCard panel, corner-bracket helpers; no hard-coded GUI colours elsewhere
   storage/
     database.py                  # SQLite read/write for session event log
 detection_accuracy.py            # Test: BitMind accuracy on FaceForensics++ (resumable CSV)

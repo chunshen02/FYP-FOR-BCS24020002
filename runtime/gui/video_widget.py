@@ -12,24 +12,54 @@ import numpy as np
 import cv2
 from PyQt6.QtWidgets import QToolTip, QWidget
 from PyQt6.QtGui import (
-    QImage, QPixmap, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics
+    QImage, QPixmap, QPainter, QPen, QBrush, QColor, QFont, QFontMetrics, QLinearGradient
 )
-from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QRect, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QPointF, QRect, QRectF, pyqtSignal, pyqtSlot
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
+from runtime.gui import theme
 
-# Risk-level colour palette: box outline, solid pill background, pill text
+# Risk-level colour: box brackets, badge border and badge text
 _RISK_COLOURS = {
-    "REAL":     (QColor("#22C55E"), QColor("#22C55E"), QColor("#052E16")),
-    "DEEPFAKE": (QColor("#EF4444"), QColor("#EF4444"), QColor("#2D0A0A")),
+    "REAL":     QColor(theme.GREEN),
+    "DEEPFAKE": QColor(theme.RED),
 }
-_PENDING_COLOUR = QColor("#6B7280")
-_PENDING_BADGE_BG = QColor("#12151C")
-_PENDING_BADGE_FG = QColor("#9CA3AF")
-_RECHECK_COLOUR = QColor("#F59E0B")
-_RECHECK_BUTTON_BG = QColor("#12151C")
-_RECHECK_BUTTON_FG = QColor("#9CA3AF")
+_BADGE_BG = QColor(theme.SURFACE)
+_BADGE_BG.setAlpha(225)
+_PENDING_COLOUR = QColor(theme.GREY)
+_PENDING_BADGE_FG = QColor(theme.TEXT_DIM)
+_RECHECK_COLOUR = QColor(theme.AMBER)
+_RECHECK_BUTTON_FG = QColor(theme.CYAN)
+_ZONE_COLOUR = QColor(theme.MAGENTA)
+_FRAME_BRACKET_COLOUR = QColor(theme.CYAN)
+_GRID_COLOUR = QColor(theme.GRID)
+_GRID_STEP = 28
+
+# Animations below are timed with time.perf_counter() and drawn in the repaints a running
+# feed already triggers (one per frame at DISPLAY_FPS), so they add no repaints of their own.
+_LOCK_S = 0.4          # brackets close in on a face this long after its verdict arrives or changes
+_LOCK_SPREAD = 14      # px outside the box where the closing brackets start
+_SCAN_PERIOD_S = 3.5   # one pass of the scan band down the live frame
+_SCAN_BAND = 40        # px height of the scan band
+
+# The idle screen has no feed driving repaints, so its scan line has a timer that runs
+# only while that screen is visible, and repaints only the strips the line moves through.
+_IDLE_TICK_MS = 33
+_IDLE_PERIOD_S = 4.0
+_IDLE_TRAIL = 60       # px of fading trail above the idle scan line
+
+
+def _cyan(alpha: int) -> QColor:
+    colour = QColor(theme.CYAN)
+    colour.setAlpha(alpha)
+    return colour
+
+
+_SCAN_CLEAR = _cyan(0)
+_SCAN_BAND_PEAK = _cyan(26)
+_IDLE_TRAIL_PEAK = _cyan(40)
+_IDLE_LINE = _cyan(150)
 
 # Badge: bold percentage on top, smaller risk label + timestamp beneath.
 # Badges are drawn at one of these size tiers -- full size unless it would
@@ -49,7 +79,7 @@ _RECHECK_TOOLTIP = "Re-check this face"
 def _tiered_fonts(base_pt: int, min_pt: int = 6) -> dict:
     fonts = {}
     for scale in _BADGE_SCALE_TIERS:
-        f = QFont("Segoe UI", max(int(round(base_pt * scale)), min_pt))
+        f = QFont(theme.DISPLAY_FONT, max(int(round(base_pt * scale)), min_pt))
         f.setBold(True)
         fonts[scale] = f
     return fonts
@@ -66,12 +96,26 @@ _BADGE_METRICS = {s: QFontMetrics(f) for s, f in _BADGE_FONTS.items()}
 
 _RECHECK_ICON_FONTS = _tiered_fonts(11, min_pt=8)
 
-_LIVE_FONT = QFont("Segoe UI", 11)
+_LIVE_FONT = QFont(theme.DISPLAY_FONT, 10)
 _LIVE_FONT.setBold(True)
+_LIVE_FONT.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+
+_IDLE_TITLE_FONT = QFont(theme.DISPLAY_FONT, 18)
+_IDLE_TITLE_FONT.setBold(True)
+_IDLE_TITLE_FONT.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 6)
+_IDLE_HINT_FONT = QFont(theme.DISPLAY_FONT, 10)
 
 
 def _recheck_diameter(scale: float) -> int:
     return max(int(_RECHECK_DIAMETER * scale), _RECHECK_MIN_DIAMETER)
+
+
+def _scanline_brush() -> QBrush:
+    """Tiled brush darkening every third pixel row, for a CRT scanline overlay."""
+    tile = QImage(1, 3, QImage.Format.Format_ARGB32)
+    tile.fill(Qt.GlobalColor.transparent)
+    tile.setPixelColor(0, 0, QColor(0, 0, 0, 40))
+    return QBrush(tile)
 
 
 def _fit_pixmap(frame_bgr: np.ndarray, max_w: int, max_h: int) -> QPixmap:
@@ -115,6 +159,13 @@ class VideoWidget(QWidget):
         self._offset = (0, 0)
         self._cached_scaled_pixmap = None
         self._cached_widget_size = None
+        self._scanlines = _scanline_brush()
+        self._locks = {}  # face_id -> (risk_level, perf_counter time its lock-on started)
+
+        self._idle_scan_y = 0.0
+        self._idle_timer = QTimer(self)
+        self._idle_timer.setInterval(_IDLE_TICK_MS)
+        self._idle_timer.timeout.connect(self._advance_idle_scan)
 
         self._blink_on = True
         self._blink_timer = QTimer(self)
@@ -132,12 +183,23 @@ class VideoWidget(QWidget):
         """Update the displayed frame, analyzed results, and pending/rechecking placeholders."""
         # Converted to a pixmap in paintEvent at display size only (~1.4 ms vs ~7 ms for converting
         # the full 2560x1600 frame here), and frames Qt never paints (e.g. hidden in Mini mode) cost nothing.
+        self._idle_timer.stop()
         self._current_frame = frame
         self._frame_size = (frame.shape[1], frame.shape[0])
         self._cached_scaled_pixmap = None  # invalidate on new frame
         self._current_results = results
         self._current_pending_bboxes = pending_bboxes
         self._current_rechecking_bboxes = [r.bbox for r in rechecking_results]
+
+        # A lock-on (re)starts when a face gets its first verdict or its verdict changes;
+        # faces no longer analyzed drop out, so a finished re-check locks on again.
+        now = time.perf_counter()
+        locks = {}
+        for result in results:
+            if result.face_id:
+                lock = self._locks.get(result.face_id)
+                locks[result.face_id] = lock if lock and lock[0] == result.risk_level else (result.risk_level, now)
+        self._locks = locks
         self.update()
 
     def clear(self):
@@ -148,7 +210,19 @@ class VideoWidget(QWidget):
         self._current_pending_bboxes = []
         self._current_rechecking_bboxes = []
         self._recheck_hitboxes = []
+        self._locks = {}
+        if self.isVisible():
+            self._idle_timer.start()
         self.update()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._current_frame is None:
+            self._idle_timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._idle_timer.stop()
 
     @property
     def has_frame(self) -> bool:
@@ -215,8 +289,9 @@ class VideoWidget(QWidget):
 
     def _draw_selection_zone(self, painter: QPainter):
         """Draw the active or in-progress detection zone rectangle."""
-        pen = QPen(QColor("#4A9FEF"), 2, Qt.PenStyle.DashLine)
-        fill = QColor(74, 159, 239, 30)
+        pen = QPen(_ZONE_COLOUR, 1, Qt.PenStyle.DashLine)
+        fill = QColor(_ZONE_COLOUR)
+        fill.setAlpha(25)
 
         if self._sel_start is not None and self._sel_end is not None:
             rect = QRect(self._sel_start, self._sel_end).normalized()
@@ -236,24 +311,16 @@ class VideoWidget(QWidget):
             painter.setPen(pen)
             painter.setBrush(QBrush(fill))
             painter.drawRect(wx, wy, ww, wh)
-            font = QFont("Segoe UI", 9)
-            painter.setFont(font)
-            painter.setPen(QColor("#4A9FEF"))
-            painter.drawText(wx + 4, wy - 4, "Detection Zone")
+            theme.draw_corner_brackets(painter, QRectF(wx, wy, ww, wh), _ZONE_COLOUR, 12, 2)
+            painter.setFont(_BADGE_SUB_FONTS[1.0])
+            painter.setPen(_ZONE_COLOUR)
+            painter.drawText(wx + 4, wy - 5, "Detection Zone")
 
     def paintEvent(self, event):
         painter = QPainter(self)
 
         if self._current_frame is None:
-            painter.fillRect(self.rect(), QColor("#000000"))
-            font = QFont("Segoe UI", 13)
-            painter.setFont(font)
-            painter.setPen(QColor(255, 255, 255, 77))
-            painter.drawText(
-                self.rect(),
-                Qt.AlignmentFlag.AlignCenter,
-                "No feed — press Start to begin detection."
-            )
+            self._draw_idle_screen(painter)
             painter.end()
             return
 
@@ -270,10 +337,62 @@ class VideoWidget(QWidget):
         self._offset = (x_offset, y_offset)
 
         painter.drawPixmap(x_offset, y_offset, scaled_pixmap)
+        painter.fillRect(QRect(x_offset, y_offset, *self._display_size), self._scanlines)
+        self._draw_scan_band(painter)
+        theme.draw_corner_brackets(
+            painter, QRectF(x_offset + 1, y_offset + 1, self._display_size[0] - 2, self._display_size[1] - 2),
+            _FRAME_BRACKET_COLOUR, 18, 2,
+        )
         self._draw_overlays(painter)
         self._draw_selection_zone(painter)
         self._draw_live_indicator(painter)
         painter.end()
+
+    def _draw_scan_band(self, painter: QPainter):
+        """Faint cyan band sweeping down the live frame."""
+        ox, oy = self._offset
+        dw, dh = self._display_size
+        centre = oy + (time.perf_counter() % _SCAN_PERIOD_S) / _SCAN_PERIOD_S * dh
+        band = QLinearGradient(0, centre - _SCAN_BAND / 2, 0, centre + _SCAN_BAND / 2)
+        band.setColorAt(0.0, _SCAN_CLEAR)
+        band.setColorAt(0.5, _SCAN_BAND_PEAK)
+        band.setColorAt(1.0, _SCAN_CLEAR)
+        band_rect = QRectF(ox, centre - _SCAN_BAND / 2, dw, _SCAN_BAND).intersected(QRectF(ox, oy, dw, dh))
+        painter.fillRect(band_rect, QBrush(band))
+
+    def _advance_idle_scan(self):
+        """Move the idle scan line, repainting only the strip it leaves and the strip it enters."""
+        old_y = self._idle_scan_y
+        self._idle_scan_y = (time.perf_counter() % _IDLE_PERIOD_S) / _IDLE_PERIOD_S * self.height()
+        for y in (old_y, self._idle_scan_y):
+            self.update(0, int(y) - _IDLE_TRAIL - 2, self.width(), _IDLE_TRAIL + 4)
+
+    def _draw_idle_screen(self, painter: QPainter):
+        """HUD grid with a scan line and a NO SIGNAL banner while no feed is running."""
+        painter.setPen(QPen(_GRID_COLOUR, 1))
+        for x in range(_GRID_STEP, self.width(), _GRID_STEP):
+            painter.drawLine(x, 0, x, self.height())
+        for y in range(_GRID_STEP, self.height(), _GRID_STEP):
+            painter.drawLine(0, y, self.width(), y)
+
+        y = self._idle_scan_y
+        trail = QLinearGradient(0, y - _IDLE_TRAIL, 0, y)
+        trail.setColorAt(0.0, _SCAN_CLEAR)
+        trail.setColorAt(1.0, _IDLE_TRAIL_PEAK)
+        painter.fillRect(QRectF(0, y - _IDLE_TRAIL, self.width(), _IDLE_TRAIL), QBrush(trail))
+        painter.setPen(QPen(_IDLE_LINE, 1))
+        painter.drawLine(QPointF(0, y), QPointF(self.width(), y))
+
+        centre_y = self.height() // 2
+        painter.setFont(_IDLE_TITLE_FONT)
+        painter.setPen(QColor(theme.CYAN_DIM))
+        painter.drawText(QRect(0, centre_y - 34, self.width(), 34), Qt.AlignmentFlag.AlignCenter, "NO SIGNAL")
+        painter.setFont(_IDLE_HINT_FONT)
+        painter.setPen(QColor(theme.TEXT_DIM))
+        painter.drawText(
+            QRect(0, centre_y + 2, self.width(), 24), Qt.AlignmentFlag.AlignCenter,
+            "No feed — press Start to begin detection."
+        )
 
     def _draw_overlays(self, painter: QPainter):
         """Draw bounding boxes, then collision-aware badges (results, then pending/rechecking)."""
@@ -293,10 +412,21 @@ class VideoWidget(QWidget):
         for result in self._current_results:
             if not result.bbox:
                 continue
-            box_colour, _, _ = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
-            painter.setPen(QPen(box_colour, 2))
+            box_colour = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
+            box_rect = QRectF(self._scaled_rect(result.bbox, scale_x, scale_y))
+            faint = QColor(box_colour)
+            faint.setAlpha(110)
+            painter.setPen(QPen(faint, 1))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(self._scaled_rect(result.bbox, scale_x, scale_y), 6, 6)
+            painter.drawRect(box_rect)
+            bracket = max(6.0, min(box_rect.width(), box_rect.height()) * 0.22)
+            lock = self._lock_progress(result.face_id, now)
+            spread = (1 - lock) * _LOCK_SPREAD
+            bracket_colour = QColor(box_colour)
+            bracket_colour.setAlphaF(0.35 + 0.65 * lock)
+            theme.draw_corner_brackets(
+                painter, box_rect.adjusted(-spread, -spread, spread, spread), bracket_colour, bracket, 3
+            )
 
         for bbox in self._current_pending_bboxes:
             self._draw_bbox_outline(painter, bbox, scale_x, scale_y, _PENDING_COLOUR)
@@ -319,6 +449,14 @@ class VideoWidget(QWidget):
             if bbox:
                 self._draw_placeholder_badge(painter, bbox, scale_x, scale_y, "Re-checking...",
                                               _RECHECK_COLOUR, _RECHECK_COLOUR, placed_badges)
+
+    def _lock_progress(self, face_id: str, now: float) -> float:
+        """Eased 0 -> 1 progress of a face's lock-on; 1 once settled or for a face without an id."""
+        lock = self._locks.get(face_id)
+        if lock is None:
+            return 1.0
+        p = min(1.0, (now - lock[1]) / _LOCK_S)
+        return 1 - (1 - p) ** 3
 
     def _scaled_rect(self, bbox: dict, scale_x: float, scale_y: float) -> QRect:
         """Map a frame-pixel bbox dict to a widget-coordinate QRect."""
@@ -371,7 +509,7 @@ class VideoWidget(QWidget):
 
     def _draw_result_badge(self, painter: QPainter, result, scale_x: float, scale_y: float,
                             now: float, placed: list):
-        _, badge_bg, badge_fg = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
+        badge_fg = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
         box_rect = self._scaled_rect(result.bbox, scale_x, scale_y)
 
         p_fake_pct = result.p_fake_raw * 100
@@ -403,9 +541,10 @@ class VideoWidget(QWidget):
         ) + int(20 * scale)
         rect = QRect(combined_rect.x(), combined_rect.y(), badge_w, combined_rect.height())
 
-        painter.setBrush(QBrush(badge_bg))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect, int(10 * scale), int(10 * scale))
+        painter.setBrush(QBrush(_BADGE_BG))
+        painter.setPen(QPen(badge_fg, 1))
+        painter.drawRect(rect)
+        painter.fillRect(QRect(rect.x(), rect.y(), max(2, int(3 * scale)), rect.height() + 1), badge_fg)
 
         painter.setFont(_BADGE_PCT_FONTS[scale])
         painter.setPen(badge_fg)
@@ -445,9 +584,9 @@ class VideoWidget(QWidget):
         rect, scale = self._place_badge(box_rect, measure, placed)
         placed.append(rect)
 
-        painter.setBrush(QBrush(_PENDING_BADGE_BG))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(rect, 3, 3)
+        painter.setBrush(QBrush(_BADGE_BG))
+        painter.setPen(QPen(box_colour, 1))
+        painter.drawRect(rect)
 
         painter.setFont(_BADGE_FONTS[scale])
         painter.setPen(text_colour)
@@ -455,8 +594,8 @@ class VideoWidget(QWidget):
 
     def _draw_recheck_button(self, painter: QPainter, rect: QRect, scale: float, face_id: str):
         """Draw the round Re-check icon at an already-resolved rect; records its hitbox for mousePressEvent."""
-        painter.setBrush(QBrush(_RECHECK_BUTTON_BG))
-        painter.setPen(QPen(_PENDING_COLOUR, 1))
+        painter.setBrush(QBrush(_BADGE_BG))
+        painter.setPen(QPen(QColor(theme.CYAN_DIM), 1))
         painter.drawEllipse(rect)
 
         painter.setFont(_RECHECK_ICON_FONTS[scale])
@@ -486,17 +625,17 @@ class VideoWidget(QWidget):
 
     def _draw_live_indicator(self, painter: QPainter):
         """Draw blinking LIVE indicator in top-left corner of the video area."""
-        circle_x = self._offset[0] + 10
-        circle_y = self._offset[1] + 10
+        circle_x = self._offset[0] + 14
+        circle_y = self._offset[1] + 14
         circle_size = 10
 
         if self._blink_on:
-            painter.setBrush(QBrush(QColor("#FF3B3B")))
+            painter.setBrush(QBrush(QColor(theme.RED)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(circle_x, circle_y, circle_size, circle_size)
 
         painter.setFont(_LIVE_FONT)
-        painter.setPen(QColor(255, 255, 255, 200))
+        painter.setPen(QColor(theme.CYAN))
         painter.drawText(
             circle_x + 16, circle_y, 200, circle_size,
             Qt.AlignmentFlag.AlignVCenter,
