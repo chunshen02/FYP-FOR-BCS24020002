@@ -4,7 +4,7 @@ A Windows desktop app that watches your screen during a video call (Zoom, Teams,
 
 ## Download
 
-**[Download the latest release](https://github.com/chunshen02/FYP-FOR-BCS24020002/releases/latest)** (`DeepfakeDetector-v1.0.0-win64.zip`).
+**[Download the latest release](https://github.com/chunshen02/FYP-FOR-BCS24020002/releases/latest)** (`DeepfakeDetector-v1.1.0-win64.zip`).
 
 1. Extract the whole zip (right-click → **Extract All**). The exe does not run from inside the zip.
 2. Open the extracted `DeepfakeDetector` folder and double-click **DeepfakeDetector.exe**. Keep the `_internal` folder beside it.
@@ -17,6 +17,7 @@ A Quick Start guide opens on first launch, and the **?** button opens it again. 
 ## Features
 
 - **Live face boxes**: every face is boxed green (REAL) or red (DEEPFAKE) with BitMind's deepfake score; faces still being checked show "Analyzing…".
+- **Confidence gauge**: an animated gauge with the most suspicious face's deepfake score, and the threshold marked on it.
 - **Alerts**: an alert card, a beep, a desktop notification, a flashing taskbar icon and a full-screen evidence screenshot.
 - **Detection Analysis**: the verdict and score for the most suspicious face, with supporting evidence from local image checks.
 - **Mini Mode**: a small always-on-top panel with live face thumbnails, so the call stays in view.
@@ -162,7 +163,7 @@ runtime/
   capture/                 Screen capture, and excluding the app's window from it
   detection/               Face detection, crop preparation, BitMind API, local evidence checks
   threads/                 Detection pipeline and alert logic (background threads)
-  gui/                     Main window, live preview, dialogs, alerts
+  gui/                     Main window, live preview, dialogs, alerts, cyberpunk HUD theme
   storage/                 SQLite session history
 detection_accuracy.py      Accuracy test
 realtime_performance.py    Performance test
