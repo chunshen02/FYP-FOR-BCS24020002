@@ -83,6 +83,7 @@ realtime_performance.py          # Test: FPS / latency / CPU / RAM on FaceForens
 screen_face_pipeline.py          # Test: real screen grab -> face crop/tracking -> BitMind-ready JPEG (no API calls), FF++ full screen
 deepfake_detector.spec           # PyInstaller build of the app -> dist/DeepfakeDetector/DeepfakeDetector.exe
 USER_GUIDE.txt                   # End-user guide; keep it in step with the Quick Start dialog when the UI changes
+README.md                        # GitHub landing page; keep download steps, features and results in step with the app
 ```
 
 The three test scripts share a lock (`results/.test.lock`, see `_hold_test_lock` in
