@@ -25,7 +25,9 @@ from dotenv import load_dotenv
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+# The project root when run from source, the _internal folder in a PyInstaller build.
+ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+load_dotenv(ENV_PATH)
 
 _API_KEY_VARS = ("BITMIND_API_KEY", "BITMIND_API_KEY_SECONDARY")   # in the order they are used
 
@@ -76,6 +78,11 @@ def verdict_decided(votes: list) -> bool:
             or reals > config.CONFIRM_VERDICTS - config.CONFIRM_FAKE_VOTES)
 
 
+def has_api_key() -> bool:
+    """Whether .env or the environment provides at least one BitMind API key."""
+    return any(os.environ.get(name) for name in _API_KEY_VARS)
+
+
 class DeepfakeInferenceEngine:
     """Submits face crop images to the BitMind API for deepfake classification."""
 
@@ -83,7 +90,7 @@ class DeepfakeInferenceEngine:
         self._keys = [(name, os.environ[name]) for name in _API_KEY_VARS if os.environ.get(name)]
         if not self._keys:
             raise EnvironmentError(
-                "BITMIND_API_KEY not found. Add it to the .env file at the project root: "
+                f"BITMIND_API_KEY not found. Add it to {ENV_PATH}: "
                 "BITMIND_API_KEY=your_key_here (optional backup: BITMIND_API_KEY_SECONDARY=your_second_key)"
             )
 

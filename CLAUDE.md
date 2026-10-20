@@ -74,7 +74,7 @@ runtime/
     main_window.py               # Main window, wires all components
     video_widget.py              # Live frame display widget
     session_log.py               # In-session event log panel
-    dialogs.py                   # Save/discard session dialog
+    dialogs.py                   # Save/discard, evidence, settings and first-run Quick Start dialogs
     alert_system.py              # Taskbar flash / beep / desktop notification on alert
   storage/
     database.py                  # SQLite read/write for session event log
@@ -82,6 +82,7 @@ detection_accuracy.py            # Test: BitMind accuracy on FaceForensics++ (re
 realtime_performance.py          # Test: FPS / latency / CPU / RAM on FaceForensics++ clips
 screen_face_pipeline.py          # Test: real screen grab -> face crop/tracking -> BitMind-ready JPEG (no API calls), FF++ full screen
 deepfake_detector.spec           # PyInstaller build of the app -> dist/DeepfakeDetector/DeepfakeDetector.exe
+USER_GUIDE.txt                   # End-user guide; keep it in step with the Quick Start dialog when the UI changes
 ```
 
 The three test scripts share a lock (`results/.test.lock`, see `_hold_test_lock` in

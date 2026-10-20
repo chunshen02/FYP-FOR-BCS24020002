@@ -125,6 +125,10 @@ returns classification results. Key components:
   - risk_level_for(): maps a P_fake score to REAL/DEEPFAKE using
     the current FAKE_THRESHOLD.
 
+  - ENV_PATH / has_api_key(): the .env file the keys are loaded
+    from (the project root, or _internal in the PyInstaller build)
+    and whether any key was found, for the Quick Start guide.
+
 ----------------------------------------------------------------
 7. runtime/detection/explainer.py
 ----------------------------------------------------------------
@@ -325,6 +329,17 @@ screenshot). Save applies the values to the config module at once
 and persists them with QSettings; load_saved_settings() re-applies
 them at startup, and "Reset to defaults" restores config.py's
 values.
+
+Also contains QuickStartDialog, a four-page first-run guide
+(welcome and API key check, starting a session, reading the
+results, extra tools) with Skip / Back / Next. The main window
+opens it automatically the first time the app runs on a computer
+(quick_start_pending(), a QSettings flag set as soon as the guide
+opens) and again whenever the user presses the round ? button in
+the control bar. Its first page reports whether a BitMind API key
+was found and, if not, the exact .env path to put it in
+(ENV_PATH from inference.py). USER_GUIDE.txt is the full user
+guide for the same features.
 
 ----------------------------------------------------------------
 16. runtime/gui/alert_system.py

@@ -41,7 +41,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from runtime.gui.video_widget import VideoWidget
 from runtime.gui.session_log import SessionLog
-from runtime.gui.dialogs import EvidenceDialog, SaveSessionDialog, SettingsDialog, load_saved_settings
+from runtime.gui.dialogs import (
+    EvidenceDialog, QuickStartDialog, SaveSessionDialog, SettingsDialog, load_saved_settings, quick_start_pending,
+)
 from runtime.gui.gauge_widget import GaugeWidget
 from runtime.gui.alert_system import notify_alert
 from runtime.capture.window_affinity import (
@@ -147,6 +149,10 @@ class MainWindow(QMainWindow):
         # Pre-init MediaPipe and HTTP session while the user is reading the UI
         self.components_ready.connect(self._on_components_ready)
         threading.Thread(target=self._preinit_components, daemon=True).start()
+
+        if quick_start_pending():
+            # Deferred until the event loop runs, so the guide opens over the already-shown window.
+            QTimer.singleShot(0, self._on_open_quick_start)
 
     # -- UI Construction -------------------------------------------------------
 
@@ -326,6 +332,15 @@ class MainWindow(QMainWindow):
         btn_settings.setToolTip("Deepfake threshold and alert sound / notification / screenshot")
         btn_settings.clicked.connect(self._on_open_settings)
         control_bar.addWidget(btn_settings)
+
+        # A round icon rather than a labelled button, so the crowded control bar grows as little as possible.
+        btn_help = QPushButton("?")
+        btn_help.setObjectName("btn_clear_zone")
+        btn_help.setFixedSize(28, 28)
+        btn_help.setStyleSheet("padding: 0; font-weight: bold;")
+        btn_help.setToolTip("Quick start guide")
+        btn_help.clicked.connect(self._on_open_quick_start)
+        control_bar.addWidget(btn_help)
 
         control_bar.addStretch()
 
@@ -1026,6 +1041,10 @@ class MainWindow(QMainWindow):
             self._session_log_event(
                 "INFO", f"Settings saved (threshold {config.FAKE_THRESHOLD * 100:.0f}%)."
             )
+
+    @pyqtSlot()
+    def _on_open_quick_start(self):
+        QuickStartDialog(parent=self).exec()
 
     # -- Detection Control -----------------------------------------------------
 

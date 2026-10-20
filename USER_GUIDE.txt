@@ -1,0 +1,337 @@
+================================================================
+  REAL-TIME DEEPFAKE DETECTION SYSTEM — USER GUIDE
+================================================================
+
+CONTENTS
+--------
+  1. What the app does
+  2. Requirements
+  3. Installing and launching
+  4. The main window
+  5. Running a session
+  6. Reading the results
+  7. Alerts
+  8. Mini Mode
+  9. Detection zone and re-check
+ 10. Settings
+ 11. Session history, screenshots and export
+ 12. Troubleshooting
+ 13. Privacy and limitations
+
+
+1. WHAT THE APP DOES
+--------------------
+The app watches your primary screen during a video call (Zoom,
+Teams, Google Meet or any other) and warns you when a face on it
+looks like a deepfake.
+
+About 15 times a second it captures the screen, finds every face
+on it and follows each face as it moves. Each new face is cropped
+and sent to the BitMind deepfake detection API, which returns a
+score from 0% (real) to 100% (deepfake). Faces are boxed in green
+(REAL) or red (DEEPFAKE), and a face that stays DEEPFAKE raises
+an alert.
+
+
+2. REQUIREMENTS
+---------------
+  - Windows 10 (version 2004 or later) or Windows 11.
+  - An internet connection, to reach the BitMind API.
+  - A BitMind API key (see API_CONNECTION_GUIDE.txt for how to get
+    one). A second key is optional and is used as a backup once
+    the first is rejected or used up.
+  - The video call shown on your primary screen.
+
+
+3. INSTALLING AND LAUNCHING
+---------------------------
+Option A — the packaged program (DeepfakeDetector.exe)
+
+  1. Open the DeepfakeDetector folder and double-click
+     DeepfakeDetector.exe. Keep the exe in that folder: it needs
+     the _internal folder beside it.
+  2. The API keys are read from _internal\.env. To change them,
+     edit that file and restart the app.
+  3. The folder contains your API keys, so do not share it.
+
+Option B — from the source code
+
+  1. Install Python 3.13.
+  2. In the project folder, run:
+         pip install -r requirements.txt
+  3. Create a file named .env in the project folder containing:
+         BITMIND_API_KEY=your_key_here
+         BITMIND_API_KEY_SECONDARY=your_second_key_here   (optional)
+  4. Start the app:
+         python main.py
+
+On first launch a short Quick Start guide opens. It shows
+whether an API key was found and, if not, the exact path of the
+.env file to put it in. Open the guide again at any time with
+the round ? button in the control bar.
+
+Before starting, check the status bar at the bottom of the
+window. All three indicators should show a green tick:
+
+    ✓ Model loaded     the face detector is ready
+    ✓ API key set      a BitMind key was found in .env
+    ✓ DB connected     session history can be saved
+
+
+4. THE MAIN WINDOW
+------------------
+  LIVE PREVIEW (left)
+      What the app sees on your primary screen, with a box and a
+      score badge on every face. The app's own window is hidden
+      from the capture, so it never checks itself.
+
+  CONTROL BAR (below the preview)
+      ▶ Start / ◻ Stop   start or stop a detection session
+      📷 Screenshot      save a full-screen image now
+      ✕ Clear Zone       remove the detection zone (section 9)
+      ⛶ Mini Mode        shrink to a small always-on-top panel
+      ⚙ Settings         threshold and alert options
+      ?                  open the Quick Start guide
+      FPS / Faces / API  frames per second, faces on screen, and
+                         the last BitMind response time
+
+  CONFIDENCE SCORE (right)
+      A gauge showing the deepfake score of the most suspicious
+      face on screen.
+
+  DETECTION ANALYSIS (right)
+      The verdict for that same face (REAL or DEEPFAKE), its
+      score, how long ago it was checked, and the reasons behind
+      it (section 6).
+
+  SESSION INFO (right)
+      Status, duration, frames processed and the model in use.
+
+  SYSTEM LOG (right)
+      A timestamped list of what happened in this session:
+      starts and stops, alerts, saved screenshots and errors.
+
+  SESSION HISTORY (bottom)
+      Your saved sessions. Appears once at least one is saved.
+
+  STATUS BAR (very bottom)
+      Capture source, model, API key, database and the current
+      deepfake threshold.
+
+
+5. RUNNING A SESSION
+--------------------
+  1. Open your video call and put its window on your primary
+     screen. Gallery and speaker views both work; bigger faces
+     give more reliable results.
+  2. Press ▶ Start. The window moves to the right edge of the
+     screen so it covers less of the call, and the status changes
+     from Initializing… to Active.
+  3. Leave the app running during the call. Use Mini Mode
+     (section 8) if the full window is in the way.
+  4. Press ◻ Stop when the call ends. A summary shows the
+     duration, the number of alerts and the result (Clean or
+     Deepfake detected). Press Save to keep the session in
+     Session History, or Discard to delete it together with its
+     alert screenshots. Closing the summary with X also saves.
+
+
+6. READING THE RESULTS
+----------------------
+Face boxes on the Live Preview:
+
+    grey dashed box,  "Analyzing…"     face found, verdict not
+                                        ready yet
+    green box,        REAL              score below the threshold
+    red box,          DEEPFAKE          score at or above the
+                                        threshold
+    amber dashed box, "Re-checking…"   a fresh verdict was
+                                        requested (section 9)
+
+The percentage on a badge is BitMind's deepfake score. The
+threshold is 70% by default and can be changed in Settings.
+
+How long a verdict takes: BitMind answers one request per second
+at most, and each answer takes a few seconds. A face that looks
+real on its first check is marked REAL at once. A face that looks
+like a deepfake is checked on up to 3 different frames, and is
+marked DEEPFAKE only if at least 2 agree, so a single wrong
+answer cannot raise an alert. That face stays on "Analyzing…" for
+about 10–15 seconds, longer when many faces are on screen. Up to
+3 faces are checked at once; others wait their turn.
+
+Once decided, a face keeps its verdict for as long as it stays on
+screen. A face that leaves and comes back is checked again.
+
+Detection Analysis lists the reasons for the latest verdict. For
+a DEEPFAKE face the app also runs its own image checks and lists
+any that fire:
+  - unusual high-frequency patterns, typical of AI upscaling;
+  - a noise mismatch between the face and its surroundings, which
+    suggests the face was blended in;
+  - unusually strong left-right asymmetry.
+These checks are supporting evidence only. If none fire, the
+verdict rests on BitMind's own assessment.
+
+
+7. ALERTS
+---------
+When a face has been DEEPFAKE for 3 frames in a row, the app
+raises an alert for it:
+  - an orange "Deepfake detected" card appears on the right
+    (a one-line banner in Mini Mode);
+  - the status changes to Alert and the taskbar icon flashes;
+  - a beep sounds and a desktop notification shows the score
+    (both can be turned off in Settings);
+  - a full-screen evidence screenshot is saved (can be turned off
+    in Settings).
+
+Press Acknowledge to dismiss the alert. It also clears by itself
+once no DEEPFAKE face has been on screen for 8 frames in a row.
+
+Each deepfake face raises its alert only once per session. A
+second deepfake face raises its own alert even while the first
+is still shown.
+
+An alert is a warning, not proof. Before acting on it, confirm
+who you are talking to in another way, for example by calling
+them back on a number you already know.
+
+
+8. MINI MODE
+------------
+Press ⛶ Mini Mode to shrink the app to a small panel that stays
+on top of other windows at the right edge of the screen, so the
+call stays in view. It shows:
+  - the session status, with ▶ Start, ◻ Stop and ⤢ (back to the
+    full window);
+  - live thumbnails of up to 3 faces, most suspicious first, with
+    their scores and a green or red border;
+  - a one-line alert banner with an Acknowledge button.
+
+Detection keeps running unchanged. Press ⤢ to return to the full
+window.
+
+
+9. DETECTION ZONE AND RE-CHECK
+------------------------------
+Detection zone: by default the whole primary screen is checked,
+including faces in other windows (a video, a photo, a web page).
+To check only part of it, start a session and drag a rectangle on
+the Live Preview, for example around the call window. A blue
+dashed "Detection Zone" box marks it. The zone stays until you
+right-click the preview or press ✕ Clear Zone, including in later
+sessions.
+
+Re-check: to get a fresh verdict for a face, click the round ↻
+button beside its badge. The box turns amber ("Re-checking…")
+until the new verdict arrives. This is useful after changing the
+threshold, or when a verdict looks wrong.
+
+
+10. SETTINGS
+------------
+Press ⚙ Settings to change:
+  - Deepfake threshold (5%–95%, default 70%): faces scoring at or
+    above it are marked DEEPFAKE. A lower value catches more
+    deepfakes but marks more real faces as fake; a higher value
+    does the opposite. It applies to new verdicts; use ↻ to
+    re-check a face already decided.
+  - Beep on alert.
+  - Desktop notification on alert.
+  - Save evidence screenshot on alert.
+
+Save applies the changes at once and keeps them for the next
+launch. Reset to defaults restores the original values.
+
+
+11. SESSION HISTORY, SCREENSHOTS AND EXPORT
+-------------------------------------------
+Session History lists each saved session with its date and time,
+duration, number of alerts and result.
+  - Double-click a session to page through its alert screenshots
+    (◀ Previous / Next ▶ or the arrow keys). Each shows when it
+    was taken and the peak deepfake score. Open file opens it in
+    your image viewer.
+  - Select a session and press Export CSV to save all its events
+    (every verdict with its score and API response time, alerts,
+    errors) as a spreadsheet file.
+  - Delete Selected removes the selected session and its alert
+    screenshots, without asking.
+  - Clear All removes every session and its alert screenshots,
+    after asking you to confirm.
+
+Where files are kept (in the folder of DeepfakeDetector.exe, or
+the project folder when run from source):
+    session_log.db   the session history
+    screenshots\     alert_<time>.png      evidence screenshots
+                     screenshot_<time>.png  📷 Screenshot button
+
+
+12. TROUBLESHOOTING
+-------------------
+"✗ API key missing" in the status bar
+    No key was found in .env. Add BITMIND_API_KEY=your_key to the
+    file named in the Quick Start guide (? button), then restart.
+
+"API key rejected" and the session stops
+    BitMind refused every key: it is wrong, expired, or out of
+    credit. Replace the key in .env and restart.
+
+"Secondary API key in use" in the status bar
+    The primary key was refused or used up, so the backup key is
+    being used. The app stays on it until it is restarted.
+
+Status shows "Degraded — Reconnecting"
+    BitMind could not be reached 3 times in a row. Check your
+    internet connection. The session keeps running and recovers
+    by itself when the connection returns.
+
+"BitMind rate limit reached — pausing requests" in the log
+    Too many requests were sent; the app pauses and resumes by
+    itself. Verdicts arrive more slowly in the meantime.
+
+No boxes appear on faces
+    - Make sure the call is on your primary screen.
+    - Make faces bigger: maximise the call window or switch to
+      speaker view. Very small or side-on faces may be missed.
+    - If a detection zone is set, check it covers the faces.
+
+"Low light detected" bar under the preview
+    The faces are dark. The app brightens them before checking,
+    but results may be less reliable. Improve the lighting if
+    possible.
+
+Faces stay on "Analyzing…" for a long time
+    This is expected for faces that look suspicious (section 6),
+    and when many faces are on screen. The API time in the
+    control bar shows how fast BitMind is answering.
+
+"DB unavailable" or "DB write failed"
+    Session history cannot be saved. Make sure the app's folder is
+    not read-only and session_log.db is not open in another
+    program.
+
+
+13. PRIVACY AND LIMITATIONS
+---------------------------
+Privacy
+  - Only the cropped face images (224 x 224 pixels) are sent to
+    BitMind. Full screen frames never leave your computer.
+  - Session history and screenshots are stored only on your
+    computer. Screenshots show the whole screen, so they may
+    contain other people's faces and private information; delete
+    sessions you no longer need.
+  - Let the other people on the call know you are using a
+    deepfake detector where that is required.
+
+Limitations
+  - Accuracy depends on the BitMind API. Some deepfakes will be
+    missed, and some real faces may be flagged.
+  - Results are less reliable for small, blurred, side-on or
+    poorly lit faces.
+  - Only the primary screen is checked.
+  - The app's own image checks (section 6) are supporting
+    evidence, not a separate detector.
+
+================================================================
