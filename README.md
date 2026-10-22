@@ -4,7 +4,7 @@ A Windows desktop app that watches your screen during a video call (Zoom, Teams,
 
 ## Download
 
-**[Download the latest release](https://github.com/chunshen02/FYP-FOR-BCS24020002/releases/latest)** (`DeepfakeDetector-v1.1.0-win64.zip`).
+**[Download the latest release](https://github.com/chunshen02/FYP-FOR-BCS24020002/releases/latest)** (`DeepfakeDetector-v1.1.1-win64.zip`).
 
 1. Extract the whole zip (right-click → **Extract All**). The exe does not run from inside the zip.
 2. Open the extracted `DeepfakeDetector` folder and double-click **DeepfakeDetector.exe**. Keep the `_internal` folder beside it.

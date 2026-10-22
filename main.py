@@ -13,7 +13,7 @@ from runtime.gui.main_window import MainWindow
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Deepfake Detector")
-    app.setApplicationVersion("1.1.0")
+    app.setApplicationVersion("1.1.1")
 
     window = MainWindow()
     window.show()
