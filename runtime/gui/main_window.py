@@ -48,6 +48,7 @@ from runtime.gui.gauge_widget import GaugeWidget
 from runtime.gui import theme
 from runtime.gui.alert_system import notify_alert
 from runtime.capture.window_affinity import (
+    WDA_EXCLUDEFROMCAPTURE,
     apply_capture_exclusion,
     clear_capture_exclusion,
     restore_capture_exclusion,
@@ -116,7 +117,7 @@ class MainWindow(QMainWindow):
         load_saved_settings()
         self.setWindowTitle("Real-Time Deepfake Detection System")
         self.setWindowIcon(_build_shield_icon())
-        self.setMinimumSize(820, 600)
+        self.setMinimumSize(*self._FULL_MODE_MIN_SIZE)
         self.setStyleSheet(self._get_stylesheet())
 
         # State
@@ -254,6 +255,7 @@ class MainWindow(QMainWindow):
         preview_label.setStyleSheet(theme.SECTION_TITLE_STYLE)
         preview_header.addWidget(preview_label)
         preview_header.addStretch()
+        preview_header.addLayout(self._build_readouts())
         left_layout.addLayout(preview_header)
 
         # Video widget, framed with a chamfered HUD border
@@ -347,6 +349,15 @@ class MainWindow(QMainWindow):
 
         control_bar.addStretch()
 
+        return control_bar
+
+    def _build_readouts(self) -> QHBoxLayout:
+        """FPS / Faces / API response time readouts for the Live Preview header."""
+        # Kept out of the control bar: there they made the left panel so wide
+        # that the splitter squeezed the sidebar cards until they were cropped.
+        readouts = QHBoxLayout()
+        readouts.setSpacing(6)
+
         # FPS readout
         fps_container = QHBoxLayout()
         fps_container.setSpacing(4)
@@ -379,15 +390,15 @@ class MainWindow(QMainWindow):
 
         # API response time readout
         self._lbl_api_ms = QLabel("API: — ms")
-        self._lbl_api_ms.setStyleSheet(f"{_READOUT_VALUE_STYLE} padding: 4px 12px;")
+        self._lbl_api_ms.setStyleSheet(f"{_READOUT_VALUE_STYLE} padding: 0 12px;")
 
-        control_bar.addLayout(fps_container)
-        control_bar.addWidget(sep)
-        control_bar.addLayout(faces_container)
-        control_bar.addWidget(sep2)
-        control_bar.addWidget(self._lbl_api_ms)
+        readouts.addLayout(fps_container)
+        readouts.addWidget(sep)
+        readouts.addLayout(faces_container)
+        readouts.addWidget(sep2)
+        readouts.addWidget(self._lbl_api_ms)
 
-        return control_bar
+        return readouts
 
     def _build_mini_bar(self) -> QWidget:
         """Compact status + Start/Stop/Exit row, shown only in Mini mode."""
@@ -498,6 +509,11 @@ class MainWindow(QMainWindow):
         card.setVisible(False)
         return card
 
+    # The cards need about 180 px; QScrollArea's own minimum is far smaller, so
+    # without this the splitter squeezes the sidebar and its hidden horizontal
+    # scroll bar crops the cards. Must stay within Mini mode's 300 px window.
+    _SIDEBAR_MIN_WIDTH = 240
+
     def _build_right_panel(self) -> QWidget:
         """Build right panel with info cards."""
         right_container = QWidget()
@@ -567,6 +583,7 @@ class MainWindow(QMainWindow):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(self._SIDEBAR_MIN_WIDTH)
         scroll.setWidget(right_container)
         return scroll
 
@@ -1082,7 +1099,7 @@ class MainWindow(QMainWindow):
             face_detector=self._shared_detector,
             engine=self._shared_engine,
         )
-        self._detection_worker.set_exclusion_region(self._window_screen_rect())
+        self._detection_worker.set_exclusion_region(self._exclusion_rect())
         if self._video_widget.selection_rect is not None:
             self._detection_worker.set_focus_region(self._video_widget.selection_rect)
         self._detection_worker.frame_ready.connect(
@@ -1665,7 +1682,9 @@ QMessageBox QPushButton:hover {{
     # -- Mini Mode ---------------------------------------------------------------
 
     _MINI_MODE_SIZE = (300, 240)   # tall enough for the alert banner above the face thumbnails without scrolling
-    _FULL_MODE_MIN_SIZE = (820, 600)
+    # Width 0 leaves the minimum width to the layout, so the window cannot be
+    # narrowed until the sidebar is pushed past its right edge.
+    _FULL_MODE_MIN_SIZE = (0, 600)
 
     @pyqtSlot()
     def _toggle_mini_mode(self):
@@ -1743,7 +1762,7 @@ QMessageBox QPushButton:hover {{
         Snap the window to the right edge of the primary screen's available
         work area (i.e. excluding the taskbar). This app does not track the
         meeting window's own bounds — only its own, for capture
-        self-exclusion (see _window_screen_rect) — so this docks to a free
+        self-exclusion (see _exclusion_rect) — so this docks to a free
         screen edge as a sensible default rather than to the meeting
         window specifically.
         """
@@ -1761,8 +1780,12 @@ QMessageBox QPushButton:hover {{
 
     # -- Window geometry exclusion --------------------------------------------
 
-    def _window_screen_rect(self) -> tuple:
-        """Return window frame bounds in physical pixels for mss exclusion."""
+    def _exclusion_rect(self) -> tuple | None:
+        """Return window frame bounds in physical pixels for the worker to mask, or None if no mask is needed."""
+        # Under WDA_EXCLUDEFROMCAPTURE the captured pixels there are the screen behind this
+        # window, not the window, so masking them would black out the meeting.
+        if self._capture_affinity_value == WDA_EXCLUDEFROMCAPTURE:
+            return None
         ratio = self.devicePixelRatioF()
         geo = self.frameGeometry()
         return (
@@ -1774,7 +1797,7 @@ QMessageBox QPushButton:hover {{
 
     def _sync_exclusion(self):
         if self._detection_worker and self._session_active:
-            self._detection_worker.set_exclusion_region(self._window_screen_rect())
+            self._detection_worker.set_exclusion_region(self._exclusion_rect())
 
     def moveEvent(self, event):
         super().moveEvent(event)

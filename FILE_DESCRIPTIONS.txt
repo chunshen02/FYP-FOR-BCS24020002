@@ -153,7 +153,8 @@ The core QThread that runs the real-time detection pipeline
 continuously in the background. Architecture:
 
   - Main loop (~15 FPS): captures a screen frame, masks the app's
-    own window region for display, optionally crops to a
+    own window region for display (only when Windows could not
+    exclude the window from capture), optionally crops to a
     user-selected detection zone, runs face detection, assigns
     stable IDs to every detected face via _FaceTracker, treats a
     track as a face (drawn, counted and classified) only once one

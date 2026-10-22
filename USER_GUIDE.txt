@@ -84,6 +84,9 @@ window. All three indicators should show a green tick:
       What the app sees on your primary screen, with a box and a
       score badge on every face. The app's own window is hidden
       from the capture, so it never checks itself.
+      FPS / Faces / API  (above the preview) frames per second,
+                         faces on screen, and the last BitMind
+                         response time
 
   CONTROL BAR (below the preview)
       ▶ Start / ◻ Stop   start or stop a detection session
@@ -92,8 +95,6 @@ window. All three indicators should show a green tick:
       ⛶ Mini Mode        shrink to a small always-on-top panel
       ⚙ Settings         threshold and alert options
       ?                  open the Quick Start guide
-      FPS / Faces / API  frames per second, faces on screen, and
-                         the last BitMind response time
 
   CONFIDENCE SCORE (right)
       A gauge showing the deepfake score of the most suspicious
@@ -305,8 +306,8 @@ No boxes appear on faces
 
 Faces stay on "Analyzing…" for a long time
     This is expected for faces that look suspicious (section 6),
-    and when many faces are on screen. The API time in the
-    control bar shows how fast BitMind is answering.
+    and when many faces are on screen. The API time above the
+    preview shows how fast BitMind is answering.
 
 "DB unavailable" or "DB write failed"
     Session history cannot be saved. Make sure the app's folder is
