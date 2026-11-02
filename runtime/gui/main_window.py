@@ -54,7 +54,9 @@ from runtime.capture.window_affinity import (
     restore_capture_exclusion,
     capture_affinity_lock,
 )
-from runtime.gui.face_thumbnail import FaceThumbnail
+from runtime.gui.face_locator import FaceLocator
+from runtime.gui.face_thumbnail import NO_ARTIFACTS_REASON, FaceThumbnail
+from runtime.gui.global_hotkey import GlobalHotkey
 from runtime.threads.detection_worker import DetectionWorker
 from runtime.threads.alert_thread import AlertThread
 from runtime.detection.face_detector import FaceDetector
@@ -118,6 +120,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Real-Time Deepfake Detection System")
         self.setWindowIcon(_build_shield_icon())
         self.setMinimumSize(*self._FULL_MODE_MIN_SIZE)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, config.ALWAYS_ON_TOP)
         self.setStyleSheet(self._get_stylesheet())
 
         # State
@@ -139,6 +142,7 @@ class MainWindow(QMainWindow):
         # updates skip the costly setStyleSheet/QPixmap work when nothing changed.
         self._analysis_key = None
         self._mini_strip_key = None
+        self._verdicts = []   # latest frame's analyzed faces, for locating a clicked Mini mode thumbnail
 
         # Shared heavy components — initialised once in background, reused across sessions
         self._shared_detector: FaceDetector = None
@@ -151,6 +155,12 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._set_status("Idle")
         self.refresh_history()
+        self._face_locator = FaceLocator(self)
+
+        # System-wide, so every face can be re-checked while the call or browser window has focus.
+        self._hotkey = GlobalHotkey(self._on_recheck_all)
+        QApplication.instance().installNativeEventFilter(self._hotkey)
+        self._register_recheck_hotkey()
 
         # Pre-init MediaPipe and HTTP session while the user is reading the UI
         self.components_ready.connect(self._on_components_ready)
@@ -306,6 +316,16 @@ class MainWindow(QMainWindow):
         self._btn_stop.clicked.connect(self._on_stop)
         control_bar.addWidget(self._btn_stop)
 
+        # Re-check all faces; round like the help button so the crowded bar grows as little as possible.
+        # Its tooltip names the shortcut, so it is set in _register_recheck_hotkey.
+        self._btn_recheck_all = QPushButton("↻")
+        self._btn_recheck_all.setObjectName("btn_clear_zone")
+        self._btn_recheck_all.setFixedSize(28, 28)
+        self._btn_recheck_all.setStyleSheet("padding: 0; font-weight: bold;")
+        self._btn_recheck_all.setEnabled(False)
+        self._btn_recheck_all.clicked.connect(self._on_recheck_all)
+        control_bar.addWidget(self._btn_recheck_all)
+
         # Screenshot button
         self._btn_screenshot = QPushButton("📷 Screenshot")
         self._btn_screenshot.setObjectName("btn_screenshot")
@@ -334,7 +354,9 @@ class MainWindow(QMainWindow):
         btn_settings = QPushButton("⚙ Settings")
         btn_settings.setObjectName("btn_clear_zone")
         btn_settings.setFixedHeight(28)
-        btn_settings.setToolTip("Deepfake threshold and alert sound / notification / screenshot")
+        btn_settings.setToolTip(
+            "Deepfake threshold, alert sound / notification / screenshot, window on top and re-check shortcut"
+        )
         btn_settings.clicked.connect(self._on_open_settings)
         control_bar.addWidget(btn_settings)
 
@@ -502,6 +524,8 @@ class MainWindow(QMainWindow):
         strip_layout.setSpacing(8)
         self._mini_thumbnails = [FaceThumbnail(size=64) for _ in range(self._MINI_THUMBNAILS)]
         for thumb in self._mini_thumbnails:
+            thumb.locate_requested.connect(self._on_locate_face)
+            thumb.recheck_requested.connect(self._on_recheck_requested)
             strip_layout.addWidget(thumb)
         strip_layout.addStretch()
         layout.addLayout(strip_layout)
@@ -715,10 +739,7 @@ class MainWindow(QMainWindow):
         self._analysis_verdict_badge.setStyleSheet(theme.badge_style(theme.RED if is_fake else theme.GREEN, 9))
         self._analysis_pct_label.setText(f"{result.p_fake_raw * 100:.1f}%")
 
-        reasons = result.explanation or [
-            "No local visual artifacts detected by heuristic analysis — "
-            "this result is based on the cloud model's own assessment."
-        ]
+        reasons = result.explanation or [NO_ARTIFACTS_REASON]
         for i, (bullet_icon, bullet_text) in enumerate(self._analysis_bullet_rows):
             show = i < len(reasons)
             bullet_icon.setVisible(show)
@@ -1021,7 +1042,12 @@ class MainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_open_settings(self):
-        if SettingsDialog(parent=self).exec() == QDialog.DialogCode.Accepted:
+        # While registered, the current shortcut is swallowed system-wide, so it could not be typed into the dialog.
+        self._hotkey.unregister()
+        accepted = SettingsDialog(parent=self).exec() == QDialog.DialogCode.Accepted
+        self._register_recheck_hotkey()
+        if accepted:
+            self._apply_always_on_top()
             self._refresh_threshold_label()
             self._gauge.update()
             self._session_log_event(
@@ -1066,6 +1092,7 @@ class MainWindow(QMainWindow):
         """Start detection and alert threads."""
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
+        self._btn_recheck_all.setEnabled(True)
         self._btn_mini_start.setEnabled(False)
         self._btn_mini_stop.setEnabled(True)
         self._session_active = True
@@ -1080,7 +1107,7 @@ class MainWindow(QMainWindow):
         # Reset confidence + analysis
         self._gauge.set_value(0, "—")
         self._update_detection_analysis(None)
-        self._update_mini_face_strip([])
+        self._update_mini_face_strip([], set())
 
         # Reset stats readouts
         self._fps_label.setText("—")
@@ -1155,10 +1182,13 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
 
         self._btn_stop.setEnabled(False)
+        self._btn_recheck_all.setEnabled(False)
         self._btn_mini_stop.setEnabled(False)
         was_active = self._session_active
         self._session_active = False
         self._session_timer.stop()
+        self._face_locator.dismiss()
+        self._verdicts = []
 
         if self._detection_worker:
             self._detection_worker.stop()
@@ -1266,6 +1296,8 @@ class MainWindow(QMainWindow):
         # A face being re-checked still has its previous verdict, which stays
         # the latest known one until the fresh result lands.
         verdicts = results + rechecking_results
+        self._verdicts = verdicts
+        self._face_locator.follow(verdicts)
 
         # Update confidence + analysis based on worst result. Alerts are
         # raised only by AlertThread, so its debounce and Acknowledge hold.
@@ -1283,12 +1315,12 @@ class MainWindow(QMainWindow):
         # actually show them — full mode already shows faces via the live
         # video overlay, so this would be wasted work there.
         if self._mini_mode:
-            self._update_mini_face_strip(verdicts)
+            self._update_mini_face_strip(verdicts, {r.face_id for r in rechecking_results})
 
-    def _update_mini_face_strip(self, results: list):
+    def _update_mini_face_strip(self, results: list, rechecking_ids: set):
         """Update Mini mode's live face thumbnails, ranked by confidence (most suspicious first)."""
         ranked = sorted(results, key=lambda r: r.p_fake_raw, reverse=True)[:len(self._mini_thumbnails)]
-        key = [(r.face_id, r.last_updated) for r in ranked]
+        key = [(r.face_id, r.last_updated, r.face_id in rechecking_ids) for r in ranked]
         if key == self._mini_strip_key:
             return
         self._mini_strip_key = key
@@ -1302,7 +1334,7 @@ class MainWindow(QMainWindow):
         self._mini_faces_empty_label.setVisible(False)
         for i, thumb in enumerate(self._mini_thumbnails):
             if i < len(ranked) and ranked[i].thumbnail is not None:
-                thumb.set_face(ranked[i].thumbnail, ranked[i].risk_level, ranked[i].p_fake_raw)
+                thumb.set_face(ranked[i], ranked[i].face_id in rechecking_ids)
             else:
                 thumb.clear()
 
@@ -1671,9 +1703,35 @@ QMessageBox QPushButton:hover {{
 
     @pyqtSlot(str)
     def _on_recheck_requested(self, face_id: str):
-        """User clicked a face's "Re-check" button — run one more classification cycle for it."""
+        """User clicked a face's ↻ button or Shift+clicked the face or its thumbnail — classify it once more."""
         if self._detection_worker is not None:
             self._detection_worker.request_recheck(face_id)
+
+    @pyqtSlot()
+    def _on_recheck_all(self):
+        """The control bar's ↻ or the re-check shortcut — classify every face that has a verdict once more."""
+        if not self._session_active:
+            return
+        count = self._detection_worker.request_recheck_all()
+        self._session_log_event(
+            "INFO", f"Re-checking {count} face{'s' if count != 1 else ''}." if count else "No verdicts to re-check yet."
+        )
+
+    def _register_recheck_hotkey(self):
+        """Register the Settings re-check shortcut system-wide and name it in the ↻ button's tooltip."""
+        hotkey = config.RECHECK_ALL_HOTKEY
+        self._btn_recheck_all.setToolTip(f"Re-check every face ({hotkey})" if hotkey else "Re-check every face")
+        if hotkey and not self._hotkey.register(hotkey):
+            self._session_log_event(
+                "ERROR", f"Re-check shortcut {hotkey} is already used by another app — choose another in Settings."
+            )
+
+    @pyqtSlot(str)
+    def _on_locate_face(self, face_id: str):
+        """A Mini mode thumbnail was clicked — mark that face where it is on the screen for a few seconds."""
+        result = next((r for r in self._verdicts if r.face_id == face_id), None)
+        if result is not None and not self._face_locator.show_face(result):
+            self._session_log_event("INFO", "Marking a face on screen needs Windows 10 version 2004 or later.")
 
     @pyqtSlot()
     def _on_clear_log(self):
@@ -1751,11 +1809,21 @@ QMessageBox QPushButton:hover {{
         self._btn_mini_mode.setText("⛶ Mini Mode")
 
         self.hide()
-        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, config.ALWAYS_ON_TOP)
         self.setMinimumSize(*self._FULL_MODE_MIN_SIZE)
         self.show()
         if self._full_mode_geometry is not None:
             self.setGeometry(self._full_mode_geometry)
+
+    def _apply_always_on_top(self):
+        """Apply the Settings window-on-top choice to Full mode; Mini mode is always on top."""
+        on_top = bool(self.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+        if self._mini_mode or on_top == config.ALWAYS_ON_TOP:
+            return
+        # The same hide/show cycle Mini mode needs for the flag to take effect on Windows.
+        self.hide()
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, config.ALWAYS_ON_TOP)
+        self.show()
 
     def _dock_to_screen_edge(self):
         """
@@ -1823,6 +1891,7 @@ QMessageBox QPushButton:hover {{
         """Ensure threads are stopped cleanly on window close."""
         self._session_timer.stop()
         self._on_stop()
+        self._hotkey.unregister()
         if self._shared_detector:
             self._shared_detector.close()
         if self._shared_engine:

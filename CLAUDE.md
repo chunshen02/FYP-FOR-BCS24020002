@@ -72,7 +72,11 @@ runtime/
     alert_thread.py              # QThread: watches FaceResult stream, fires alerts
   gui/
     main_window.py               # Main window, wires all components
-    video_widget.py              # Live frame display widget
+    video_widget.py              # Live frame display widget; ↻ or Shift+click a face to re-check it
+    gauge_widget.py              # Animated semicircular confidence gauge
+    face_thumbnail.py            # Mini Mode face thumbnails (click = locate, Shift+click = re-check) + shared verdict tooltip
+    face_locator.py              # Mini Mode on-screen face highlight; capture-excluded, so it never reaches the detector
+    global_hotkey.py             # System-wide re-check-all shortcut via Windows RegisterHotKey
     session_log.py               # In-session event log panel
     dialogs.py                   # Save/discard, evidence, settings and first-run Quick Start dialogs
     alert_system.py              # Taskbar flash / beep / desktop notification on alert
@@ -102,6 +106,8 @@ once, since concurrent tests skew each other's screen, CPU and BitMind figures.
 - `DETECTION_TILE_GRID = 3` — N x N overlapping tiles for small-face detection (1 disables)
 - `ALERT_TRIGGER_FRAMES = 3` — consecutive DEEPFAKE frames for a face to raise its alert; each deepfake face alerts once per session (own ALERT event; faces alerting on the same frame share one screenshot)
 - `ALERT_DISMISS_FRAMES = 8` — consecutive frames with no DEEPFAKE face to auto-dismiss
+- `ALWAYS_ON_TOP = False` — keep the Full-mode window on top (user-adjustable in Settings); Mini mode is always on top
+- `RECHECK_ALL_HOTKEY = "Ctrl+Alt+R"` — system-wide shortcut that re-checks every face with a verdict; empty disables (user-adjustable in Settings)
 
 ## API Setup
 

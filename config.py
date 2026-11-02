@@ -82,6 +82,11 @@ ALERT_AUTO_SCREENSHOT = True          # Save a full-screen evidence PNG on alert
 # ── Display / Loop Rate ────────────────────────────────────────────────────────
 DISPLAY_FPS = 15                      # Detection loop tick rate (frames/sec)
 
+# ── Window & Shortcuts ─────────────────────────────────────────────────────────
+ALWAYS_ON_TOP = False                 # Keep the Full-mode window above others; Mini mode always is (adjustable in Settings)
+# System-wide, so it fires while the call or browser window has focus. Empty disables it (adjustable in Settings).
+RECHECK_ALL_HOTKEY = "Ctrl+Alt+R"
+
 # ── Low-Light Handling ────────────────────────────────────────────────────────
 LOW_LIGHT_THRESHOLD = 40              # Frame mean brightness (0-255) below which low-light mode activates
 LOW_LIGHT_GAMMA = 0.5                 # Gamma exponent applied to dark face crops before API submission

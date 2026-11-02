@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QFrame,
     QSpinBox,
     QCheckBox,
+    QKeySequenceEdit,
     QStackedWidget,
     QWidget,
 )
@@ -25,6 +26,7 @@ from PyQt6.QtGui import QDesktopServices, QKeySequence, QPixmap, QShortcut
 import config
 from runtime.detection.inference import ENV_PATH, has_api_key
 from runtime.gui import theme
+from runtime.gui.global_hotkey import hotkey_parts
 
 _DIALOG_STYLE = f"""
     QDialog {{
@@ -45,14 +47,14 @@ _DIALOG_STYLE = f"""
         background-color: {theme.CYAN};
         border-color: {theme.CYAN};
     }}
-    QSpinBox {{
+    QSpinBox, QKeySequenceEdit QLineEdit {{
         background-color: {theme.SURFACE};
         color: {theme.CYAN};
         border: 1px solid {theme.CYAN_DIM};
         padding: 2px 6px;
         font-family: '{theme.MONO_FONT}';
     }}
-    QSpinBox:focus {{
+    QSpinBox:focus, QKeySequenceEdit QLineEdit:focus {{
         border-color: {theme.CYAN};
     }}
 """
@@ -84,7 +86,10 @@ _PRIMARY_BUTTON_STYLE = f"""
 
 _TITLE_STYLE = f"font-size: 15px; font-weight: 600; letter-spacing: 1px; color: {theme.CYAN};"
 
-_SETTING_KEYS = ("FAKE_THRESHOLD", "ALERT_SOUND_ENABLED", "ALERT_NOTIFICATION_ENABLED", "ALERT_AUTO_SCREENSHOT")
+_SETTING_KEYS = (
+    "FAKE_THRESHOLD", "ALERT_SOUND_ENABLED", "ALERT_NOTIFICATION_ENABLED", "ALERT_AUTO_SCREENSHOT",
+    "ALWAYS_ON_TOP", "RECHECK_ALL_HOTKEY",
+)
 # Captured at import, before load_saved_settings() overrides them, so
 # "Reset to defaults" restores the values written in config.py.
 _DEFAULTS = {key: getattr(config, key) for key in _SETTING_KEYS}
@@ -170,7 +175,8 @@ class SaveSessionDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Save session results?")
         self.setModal(True)
-        self.setFixedWidth(320)
+        # Narrower than Mini mode's 300 px window, so stopping a session there does not cover the call.
+        self.setFixedWidth(250)
         self.setStyleSheet(_DIALOG_STYLE)
         # Only the Discard button deletes the session: closing the dialog with
         # the title-bar X or Esc keeps it, so a session with alerts is never lost by accident.
@@ -183,23 +189,23 @@ class SaveSessionDialog(QDialog):
 
     def _build_ui(self, duration: str, alert_count: int):
         layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(8)
+        layout.setContentsMargins(14, 12, 14, 12)
 
         title = QLabel("Save session results?")
-        title.setStyleSheet(_TITLE_STYLE)
+        title.setStyleSheet(f"{_TITLE_STYLE} font-size: 13px;")
         layout.addWidget(title)
         layout.addWidget(_divider())
 
         stats_layout = QVBoxLayout()
-        stats_layout.setSpacing(6)
+        stats_layout.setSpacing(4)
 
         def make_row(label: str, value: str) -> QHBoxLayout:
             row = QHBoxLayout()
             lbl = QLabel(label)
-            lbl.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_DIM};")
+            lbl.setStyleSheet(f"font-size: 11px; color: {theme.TEXT_DIM};")
             val = QLabel(value)
-            val.setStyleSheet(f"font-size: 12px; color: {theme.TEXT}; font-family: '{theme.MONO_FONT}';")
+            val.setStyleSheet(f"font-size: 11px; color: {theme.TEXT}; font-family: '{theme.MONO_FONT}';")
             val.setAlignment(Qt.AlignmentFlag.AlignRight)
             row.addWidget(lbl)
             row.addStretch()
@@ -211,11 +217,11 @@ class SaveSessionDialog(QDialog):
 
         result_row = QHBoxLayout()
         result_lbl = QLabel("Result")
-        result_lbl.setStyleSheet(f"font-size: 12px; color: {theme.TEXT_DIM};")
+        result_lbl.setStyleSheet(f"font-size: 11px; color: {theme.TEXT_DIM};")
         result_badge = QLabel(
             "Deepfake detected" if alert_count > 0 else "Clean"
         )
-        result_badge.setStyleSheet(theme.badge_style(theme.RED if alert_count > 0 else theme.GREEN, 11))
+        result_badge.setStyleSheet(theme.badge_style(theme.RED if alert_count > 0 else theme.GREEN, 10))
         result_row.addWidget(result_lbl)
         result_row.addStretch()
         result_row.addWidget(result_badge)
@@ -233,6 +239,9 @@ class SaveSessionDialog(QDialog):
         save_btn = _dialog_button("Save", _PRIMARY_BUTTON_STYLE)
         save_btn.clicked.connect(self.accept)
         save_btn.setDefault(True)
+
+        for button in (discard_btn, save_btn):
+            button.setFixedHeight(28)
 
         btn_row.addWidget(discard_btn)
         btn_row.addStretch()
@@ -345,7 +354,7 @@ class EvidenceDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """Edits the deepfake threshold and alert cues; Save applies them immediately and persists them."""
+    """Edits the deepfake threshold, alert cues, window stacking and re-check shortcut; Save applies and persists them."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -375,20 +384,35 @@ class SettingsDialog(QDialog):
         threshold_row.addWidget(self._threshold)
         layout.addLayout(threshold_row)
 
-        hint = QLabel(
-            "Faces scoring at or above this are flagged DEEPFAKE. Applies to new "
-            "verdicts; use the ↻ button beside a face's verdict to re-classify it."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"font-size: 10px; color: {theme.TEXT_DIM};")
-        layout.addWidget(hint)
+        layout.addWidget(self._hint(
+            "Faces scoring at or above this are flagged DEEPFAKE. Applies to new verdicts; press the "
+            "re-check shortcut below, or ↻ in the control bar, to re-classify every face on screen."
+        ))
 
         self._sound = QCheckBox("Beep on alert")
         self._notification = QCheckBox("Desktop notification on alert")
         self._screenshot = QCheckBox("Save evidence screenshot on alert")
-        for checkbox in (self._sound, self._notification, self._screenshot):
+        self._on_top = QCheckBox("Keep window on top of other windows")
+        for checkbox in (self._sound, self._notification, self._screenshot, self._on_top):
             checkbox.setStyleSheet("font-size: 12px;")
             layout.addWidget(checkbox)
+
+        hotkey_row = QHBoxLayout()
+        hotkey_label = QLabel("Re-check all faces shortcut")
+        hotkey_label.setStyleSheet("font-size: 12px;")
+        hotkey_row.addWidget(hotkey_label)
+        hotkey_row.addStretch()
+        self._hotkey = QKeySequenceEdit()
+        self._hotkey.setMaximumSequenceLength(1)
+        self._hotkey.setClearButtonEnabled(True)
+        self._hotkey.setFixedWidth(130)
+        hotkey_row.addWidget(self._hotkey)
+        layout.addLayout(hotkey_row)
+        layout.addWidget(self._hint("Works even while another app has focus. Clear it to turn the shortcut off."))
+        self._hotkey_error = self._hint(
+            "Use Ctrl, Alt or Win with a letter or digit, or a function key (F1–F24).", theme.RED
+        )
+        layout.addWidget(self._hotkey_error)
 
         layout.addWidget(_divider())
 
@@ -409,18 +433,36 @@ class SettingsDialog(QDialog):
 
         self._show_values({key: getattr(config, key) for key in _SETTING_KEYS})
 
+    @staticmethod
+    def _hint(text: str, colour: str = theme.TEXT_DIM) -> QLabel:
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet(f"font-size: 10px; color: {colour};")
+        return label
+
     def _show_values(self, values: dict):
         self._threshold.setValue(round(values["FAKE_THRESHOLD"] * 100))
         self._sound.setChecked(values["ALERT_SOUND_ENABLED"])
         self._notification.setChecked(values["ALERT_NOTIFICATION_ENABLED"])
         self._screenshot.setChecked(values["ALERT_AUTO_SCREENSHOT"])
+        self._on_top.setChecked(values["ALWAYS_ON_TOP"])
+        self._hotkey.setKeySequence(
+            QKeySequence(values["RECHECK_ALL_HOTKEY"], QKeySequence.SequenceFormat.PortableText)
+        )
+        self._hotkey_error.setVisible(False)
 
     def _on_save(self):
+        hotkey = self._hotkey.keySequence().toString(QKeySequence.SequenceFormat.PortableText)
+        if hotkey and hotkey_parts(hotkey) is None:
+            self._hotkey_error.setVisible(True)
+            return
         values = {
             "FAKE_THRESHOLD": self._threshold.value() / 100,
             "ALERT_SOUND_ENABLED": self._sound.isChecked(),
             "ALERT_NOTIFICATION_ENABLED": self._notification.isChecked(),
             "ALERT_AUTO_SCREENSHOT": self._screenshot.isChecked(),
+            "ALWAYS_ON_TOP": self._on_top.isChecked(),
+            "RECHECK_ALL_HOTKEY": hotkey,
         }
         store = _settings_store()
         for key, value in values.items():
@@ -566,7 +608,7 @@ class QuickStartDialog(QDialog):
         ))
         layout.addLayout(_guide_row(
             "3", "Press <b>⛶ Mini Mode</b> to shrink the app to a small always-on-top panel with live face "
-                 "thumbnails, so the call stays in view."
+                 "thumbnails, so the call stays in view. Click a thumbnail to mark that face on screen."
         ))
         layout.addLayout(_guide_row(
             "4", "Press <b>◻ Stop</b> when the call ends, then <b>Save</b> the session to keep it in "
@@ -608,13 +650,16 @@ class QuickStartDialog(QDialog):
             "🔲", "<b>Detection zone</b> — while detecting, drag a rectangle on the Live Preview to check only "
                  "that area, such as the call window. Right-click or press <b>✕ Clear Zone</b> to remove it."
         ))
+        recheck_all = (f"press <b>{html.escape(config.RECHECK_ALL_HOTKEY)}</b> in any app, or ↻ in the control bar,"
+                       if config.RECHECK_ALL_HOTKEY else "press ↻ in the control bar")
         layout.addLayout(_guide_row(
-            "↻", "<b>Re-check</b> — a face keeps its verdict while it stays on screen. Click ↻ beside its "
-                 "badge to get a fresh one."
+            "↻", "<b>Re-check</b> — a face keeps its verdict while it stays on screen. For a fresh one, click ↻ "
+                 "beside its badge or <b>Shift+click</b> the face (or its Mini Mode thumbnail); "
+                 f"{recheck_all} to re-check every face."
         ))
         layout.addLayout(_guide_row(
-            "⚙", "<b>Settings</b> — change the deepfake threshold, and turn the alert beep, notification and "
-                 "evidence screenshot on or off."
+            "⚙", "<b>Settings</b> — change the deepfake threshold, turn the alert beep, notification and "
+                 "evidence screenshot on or off, keep the window on top, and change the re-check shortcut."
         ))
         layout.addLayout(_guide_row(
             "🗂", "<b>Session History</b> — double-click a saved session to see its alert screenshots, or "

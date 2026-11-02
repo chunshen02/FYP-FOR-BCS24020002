@@ -19,6 +19,7 @@ from PyQt6.QtCore import Qt, QEvent, QTimer, QPoint, QPointF, QRect, QRectF, pyq
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import config
 from runtime.gui import theme
+from runtime.gui.face_thumbnail import face_details_html
 
 # Risk-level colour: box brackets, badge border and badge text
 _RISK_COLOURS = {
@@ -74,6 +75,7 @@ _BADGE_SCALE_TIERS = (1.0, 0.8, 0.65, 0.5)
 _RECHECK_DIAMETER = 22
 _RECHECK_MIN_DIAMETER = 18
 _RECHECK_TOOLTIP = "Re-check this face"
+_FACE_HINT = "Shift+click to re-check"
 
 
 def _tiered_fonts(base_pt: int, min_pt: int = 6) -> dict:
@@ -138,10 +140,11 @@ class VideoWidget(QWidget):
     - Shows LIVE indicator in top-left corner
     - Scales frames to fit widget maintaining aspect ratio
     - Drag left-click to set a detection zone; right-click to clear
+    - Shift+click a face, or click its ↻ button, to re-check it
     """
 
     region_selected = pyqtSignal(object)  # emits (x, y, w, h) in frame pixels, or None
-    recheck_requested = pyqtSignal(str)   # emits the face_id whose "Re-check" button was clicked
+    recheck_requested = pyqtSignal(str)   # emits the face_id whose ↻ button was clicked or that was Shift+clicked
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -154,6 +157,7 @@ class VideoWidget(QWidget):
         self._current_pending_bboxes = []
         self._current_rechecking_bboxes = []
         self._recheck_hitboxes = []  # list[(QRect, face_id)] in widget coords, rebuilt every paint
+        self._face_hitboxes = []     # list[(QRect, FaceResult)] in widget coords, rebuilt every paint
         self._frame_size = (0, 0)
         self._display_size = (0, 0)
         self._offset = (0, 0)
@@ -210,6 +214,7 @@ class VideoWidget(QWidget):
         self._current_pending_bboxes = []
         self._current_rechecking_bboxes = []
         self._recheck_hitboxes = []
+        self._face_hitboxes = []
         self._locks = {}
         if self.isVisible():
             self._idle_timer.start()
@@ -235,6 +240,11 @@ class VideoWidget(QWidget):
             for rect, face_id in self._recheck_hitboxes:
                 if rect.contains(pos):
                     self.recheck_requested.emit(face_id)
+                    return
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                face = self._face_at(pos)
+                if face is not None:
+                    self.recheck_requested.emit(face[1].face_id)
                     return
             self._sel_start = pos
             self._sel_end = pos
@@ -397,6 +407,7 @@ class VideoWidget(QWidget):
     def _draw_overlays(self, painter: QPainter):
         """Draw bounding boxes, then collision-aware badges (results, then pending/rechecking)."""
         self._recheck_hitboxes = []
+        self._face_hitboxes = []
         if self._frame_size[0] == 0:
             return
         if (not self._current_results and not self._current_pending_bboxes
@@ -413,7 +424,10 @@ class VideoWidget(QWidget):
             if not result.bbox:
                 continue
             box_colour = _RISK_COLOURS.get(result.risk_level, _RISK_COLOURS["REAL"])
-            box_rect = QRectF(self._scaled_rect(result.bbox, scale_x, scale_y))
+            face_rect = self._scaled_rect(result.bbox, scale_x, scale_y)
+            if result.face_id:
+                self._face_hitboxes.append((face_rect, result))
+            box_rect = QRectF(face_rect)
             faint = QColor(box_colour)
             faint.setAlpha(110)
             painter.setPen(QPen(faint, 1))
@@ -604,17 +618,27 @@ class VideoWidget(QWidget):
 
         self._recheck_hitboxes.append((rect, face_id))
 
+    def _face_at(self, pos: QPoint) -> tuple | None:
+        """(box, FaceResult) of the analyzed face whose box contains pos, or None."""
+        return next(((rect, result) for rect, result in self._face_hitboxes if rect.contains(pos)), None)
+
     def event(self, event):
-        # The icon has no text, so its tooltip names the action; the widget's own
-        # tooltip cannot be used because the buttons are painted, not child widgets.
+        # The ↻ icon has no text, so its tooltip names the action, and a face box's tooltip gives
+        # that face's reasons; the widget's own tooltip cannot be used because both are painted,
+        # not child widgets.
         if event.type() == QEvent.Type.ToolTip:
             pos = event.pos()
             rect = next((r for r, _ in self._recheck_hitboxes if r.contains(pos)), None)
-            if rect is None:
-                QToolTip.hideText()
-                event.ignore()
-            else:
+            if rect is not None:
                 QToolTip.showText(event.globalPos(), _RECHECK_TOOLTIP, self, rect)
+                return True
+            face = self._face_at(pos)
+            if face is not None:
+                box, result = face
+                QToolTip.showText(event.globalPos(), face_details_html(result, _FACE_HINT), self, box)
+                return True
+            QToolTip.hideText()
+            event.ignore()
             return True
         return super().event(event)
 

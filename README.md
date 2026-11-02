@@ -20,10 +20,10 @@ A Quick Start guide opens on first launch, and the **?** button opens it again. 
 - **Confidence gauge**: an animated gauge with the most suspicious face's deepfake score, and the threshold marked on it.
 - **Alerts**: an alert card, a beep, a desktop notification, a flashing taskbar icon and a full-screen evidence screenshot.
 - **Detection Analysis**: the verdict and score for the most suspicious face, with supporting evidence from local image checks.
-- **Mini Mode**: a small always-on-top panel with live face thumbnails, so the call stays in view.
+- **Mini Mode**: a small always-on-top panel with live face thumbnails, so the call stays in view. Click a thumbnail to mark that face on screen, hover for the reasons behind its verdict, Shift+click to re-check it.
 - **Detection zone**: drag a rectangle on the preview to check only the call window.
-- **Re-check**: ask for a fresh verdict on any face.
-- **Settings**: deepfake threshold, and the alert beep, notification and screenshot on or off.
+- **Re-check**: ask for a fresh verdict on one face (↻ or Shift+click), or on every face at once with a system-wide shortcut (Ctrl+Alt+R by default).
+- **Settings**: deepfake threshold, the alert beep, notification and screenshot on or off, keep the window on top, and the re-check shortcut.
 - **Session history**: saved sessions with their alert screenshots, exportable to CSV.
 
 ## How it works
@@ -152,7 +152,7 @@ All tuneable values live in [`config.py`](config.py). The most important:
 | `DETECTION_TILE_GRID` | `3` | N×N tiles for finding small faces (1 turns tiling off) |
 | `MAX_PENDING_FACES` | `3` | Faces waiting for a verdict at once |
 
-The threshold and the alert beep, notification and screenshot can also be changed in the app's Settings, which are kept between launches.
+The threshold, the alert beep, notification and screenshot, window on top (`ALWAYS_ON_TOP`) and the re-check shortcut (`RECHECK_ALL_HOTKEY`) can also be changed in the app's Settings, which are kept between launches.
 
 ## Project structure
 

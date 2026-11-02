@@ -543,6 +543,16 @@ class DetectionWorker(QThread):
             self._recheck_ids.add(face_id)
             self._votes.pop(face_id, None)
 
+    def request_recheck_all(self) -> int:
+        """Re-check every face that already has a verdict; returns how many were queued."""
+        with self._pending_lock:
+            locked = self._locked_ids
+            self._recheck_ids |= locked
+            for face_id in locked:
+                self._votes.pop(face_id, None)
+            self._locked_ids = set()
+            return len(locked)
+
     def set_exclusion_region(self, rect: tuple | None):
         """Set a screen region (x, y, w, h) in physical pixels to blank before detection."""
         with self._excl_lock:

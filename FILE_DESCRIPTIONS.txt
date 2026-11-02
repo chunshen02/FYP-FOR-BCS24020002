@@ -35,12 +35,15 @@ used across the entire project. This includes:
     CONFIRM_FAKE_VOTES)
   - Alert trigger and dismiss frame counters, and the alert cue
     switches (sound, desktop notification, evidence screenshot)
+  - Whether the Full-mode window stays on top (ALWAYS_ON_TOP) and
+    the system-wide re-check-all-faces shortcut (RECHECK_ALL_HOTKEY)
   - Low-light detection threshold and gamma correction exponent
   - Local explainability (CV heuristic) thresholds
 No logic lives here — only constants. All other modules import
-from this file, making tuning a one-place operation. FAKE_THRESHOLD
-and the alert cue switches are overridden at startup by any values
-saved from the Settings dialog (see dialogs.py).
+from this file, making tuning a one-place operation. FAKE_THRESHOLD,
+the alert cue switches, ALWAYS_ON_TOP and RECHECK_ALL_HOTKEY are
+overridden at startup by any values saved from the Settings dialog
+(see dialogs.py).
 
 ----------------------------------------------------------------
 3. runtime/capture/screen_capture.py
@@ -176,7 +179,10 @@ continuously in the background. Architecture:
     verdicts. The local explainer runs on confirmed DEEPFAKE
     results. Results are cached and shared back to the main loop
     via a thread-safe lock; a classified face is locked until the
-    user requests a manual re-check. Transient failures count
+    user requests a manual re-check — request_recheck() for one
+    face, request_recheck_all() for every face that has a verdict
+    (they then queue for slots like any other face, so a full
+    re-check does not burst past the rate limit). Transient failures count
     towards a Degraded state; an HTTP 429 pauses requests (Retry-
     After, or a doubling back-off) without counting as a failure;
     a move to the secondary API key is logged and reported via
@@ -236,16 +242,25 @@ and background threads together. Responsibilities include:
     evidence when an alert fires (if enabled in Settings).
   - Session history: exporting the selected session's events to
     CSV, deleting it, or clearing all history after confirmation.
-  - Opening the Settings dialog.
-  - Handling detection-zone selection events from VideoWidget and
-    forwarding them to DetectionWorker.
+  - Opening the Settings dialog, then applying its window-on-top
+    choice to Full mode (Mini mode is always on top).
+  - Handling detection-zone selection and per-face re-check events
+    from VideoWidget and the Mini Mode thumbnails and forwarding
+    them to DetectionWorker.
+  - Re-checking every face with a verdict, from the round ↻ button
+    in the control bar (enabled while detecting) or the system-wide
+    shortcut, registered through global_hotkey.py. The shortcut is
+    unregistered while Settings is open, so its current combination
+    can be typed into the dialog, and registered again on closing.
   - Mini Mode: collapsing to a small always-on-top bar with live
     face thumbnails and Start/Stop controls, so a meeting window
     underneath stays visible; an alert shows as a one-line banner
     with an Acknowledge button instead of the full alert card, and
     session history stays hidden even after a session is saved.
     All other sections are hidden (not destroyed), preserving state
-    when returning to full mode.
+    when returning to full mode. Clicking a thumbnail marks that
+    face on screen with FaceLocator, which follows the face each
+    frame.
   - Pre-initialising the shared FaceDetector and
     DeepfakeInferenceEngine on a background thread at startup, and
     reusing them across sessions to avoid a slow per-session reload.
@@ -269,7 +284,9 @@ GUI thread. A QPainter-based paintEvent draws:
     "Analyzing..." badge for faces detected but not yet scored.
   - Confidence badges below each analyzed box, outlined in the
     verdict colour, showing the raw P_fake percentage, risk label,
-    and a relative timestamp ("just now" / "Ns ago").
+    and a relative timestamp ("just now" / "Ns ago"), with a round
+    ↻ re-check button beside each; and dashed amber boxes with a
+    "Re-checking..." badge for faces being re-checked.
   - A blinking red circle with a "DETECTING" label in the
     top-left corner while a feed is active, a faint scanline
     overlay, a faint cyan band sweeping down the frame, and cyan
@@ -284,8 +301,11 @@ shown and the widget is visible (it stops on the first frame and
 in Mini Mode), and repaints only the strips the line moves through.
 It also supports drag-to-select a rectangular detection zone
 (left-click drag to set, right-click to clear), emitted via the
-region_selected signal, and exposes has_frame so the main window's
-screenshot action can tell whether a feed is active.
+region_selected signal. Clicking a face's ↻ button or Shift+clicking
+the face emits recheck_requested with its face_id, and resting the
+mouse on a face box shows a tooltip with that face's verdict and
+reasons. It exposes has_frame so the main window's screenshot
+action can tell whether a feed is active.
 
 ----------------------------------------------------------------
 12. runtime/gui/gauge_widget.py
@@ -316,12 +336,37 @@ Mini Mode's live face strip, so the user can visually confirm which
 specific face a confidence score belongs to without needing the
 full video preview. set_face() displays the exact preprocessed BGR
 crop that was analyzed (from FaceResult.thumbnail), with a
-risk-coloured border (green/red) and a confidence percentage label;
-clear() hides the slot when fewer faces are currently tracked than
-the fixed thumbnail pool size (three, most suspicious first).
+risk-coloured border (green/red, amber while re-checking), a
+confidence percentage label and a tooltip with the verdict and its
+reasons; clear() hides the slot when fewer faces are currently
+tracked than the fixed thumbnail pool size (three, most suspicious
+first). A click emits locate_requested and a Shift+click emits
+recheck_requested, each with the face_id.
+
+Also holds face_details_html(), the per-face verdict tooltip shared
+with the video preview and FaceLocator, and NO_ARTIFACTS_REASON, the
+reason shown when the local image checks found nothing (also used
+by the Detection Analysis card).
 
 ----------------------------------------------------------------
-14. runtime/gui/session_log.py
+14. runtime/gui/face_locator.py
+----------------------------------------------------------------
+FaceLocator, Mini Mode's on-screen face highlight: a borderless,
+see-through, always-on-top tool window drawn over a face's real
+position on the primary screen (its bbox mapped from physical
+capture pixels to Qt's logical coordinates), with corner brackets
+in the verdict colour and a score badge. show_face() shows it for
+about 3 s before it fades out; follow() moves it with the face each
+frame and fades it at once when the face leaves the screen. Hovering
+pauses the fade and shows the face's verdict tooltip; a click closes
+it. The window never takes focus, and is excluded from screen capture
+(window_affinity.py) so it never reaches the detector's frames; it
+is used only where WDA_EXCLUDEFROMCAPTURE is available (Windows 10
+2004+), because under WDA_MONITOR it would black the face out of
+the capture instead.
+
+----------------------------------------------------------------
+15. runtime/gui/session_log.py
 ----------------------------------------------------------------
 A read-only QTextEdit subclass that displays a colour-coded,
 timestamped log of all detection events within the current
@@ -337,7 +382,7 @@ instead. New entries are appended with HTML formatting and the
 scroll position is automatically advanced to the latest entry.
 
 ----------------------------------------------------------------
-15. runtime/gui/dialogs.py
+16. runtime/gui/dialogs.py
 ----------------------------------------------------------------
 Contains the SaveSessionDialog modal dialog shown when the user
 presses Stop. It displays the session duration, number of alerts
@@ -348,9 +393,12 @@ to drop it. The dialog result is checked in MainWindow._on_stop():
 Save writes the stop event, Discard deletes every event logged
 since the session's start event.
 
-Also contains SettingsDialog, which edits FAKE_THRESHOLD and the
+Also contains SettingsDialog, which edits FAKE_THRESHOLD, the
 alert cue switches (beep, desktop notification, evidence
-screenshot). Save applies the values to the config module at once
+screenshot), ALWAYS_ON_TOP and the re-check shortcut
+(RECHECK_ALL_HOTKEY, entered in a QKeySequenceEdit and refused with
+an inline message unless global_hotkey.hotkey_parts() supports it).
+Save applies the values to the config module at once
 and persists them with QSettings; load_saved_settings() re-applies
 them at startup, and "Reset to defaults" restores config.py's
 values.
@@ -367,7 +415,7 @@ was found and, if not, the exact .env path to put it in
 guide for the same features.
 
 ----------------------------------------------------------------
-16. runtime/gui/alert_system.py
+17. runtime/gui/alert_system.py
 ----------------------------------------------------------------
 Provides notify_alert(), called when an alert fires so it is
 noticed even while the meeting window has focus: it flashes the
@@ -379,7 +427,22 @@ and is wrapped in a try/except so that an unavailable
 notification backend never crashes the application.
 
 ----------------------------------------------------------------
-17. runtime/gui/theme.py
+18. runtime/gui/global_hotkey.py
+----------------------------------------------------------------
+System-wide keyboard shortcut through the Windows RegisterHotKey
+API (ctypes, no extra dependency), so the user can re-check every
+face while the meeting or browser window has focus. hotkey_parts()
+turns a portable key sequence such as "Ctrl+Alt+R" into Windows
+modifier flags and a virtual-key code; it accepts a letter or digit
+with Ctrl, Alt or Win, or a function key, and rejects anything else
+(a letter with no modifier would swallow ordinary typing in every
+app). GlobalHotkey registers the shortcut on the GUI thread's
+message queue (no window handle) and, installed as a Qt native
+event filter, calls its callback on WM_HOTKEY. register() returns
+False when the combination is unsupported or another app holds it.
+
+----------------------------------------------------------------
+19. runtime/gui/theme.py
 ----------------------------------------------------------------
 The single source of the app's cyberpunk HUD look, so every GUI
 module draws from one palette instead of hard-coded colours:
@@ -402,7 +465,7 @@ module draws from one palette instead of hard-coded colours:
     used to draw the eye to the alert card when an alert fires.
 
 ----------------------------------------------------------------
-18. runtime/gui/window_affinity.py
+20. runtime/gui/window_affinity.py
 ----------------------------------------------------------------
 Excludes the app's own window from screen capture at the OS
 compositor level via the Windows SetWindowDisplayAffinity API —
@@ -415,7 +478,7 @@ remains as a defensive fallback for non-Windows platforms or if
 this call fails. No-ops on non-Windows platforms.
 
 ----------------------------------------------------------------
-19. runtime/storage/database.py
+21. runtime/storage/database.py
 ----------------------------------------------------------------
 Local SQLite persistence layer for session event logging. All
 data is stored in a single file on the host machine (DB_PATH
@@ -441,7 +504,7 @@ functions:
     control).
 
 ----------------------------------------------------------------
-20. detection_accuracy.py
+22. detection_accuracy.py
 ----------------------------------------------------------------
 Test script measuring detection accuracy on FaceForensics++ (c23):
 the first ACCURACY_VIDEOS_PER_SUBSET videos of original (real) and
@@ -461,7 +524,7 @@ the confirmed verdict, and sweeps thresholds 0.5-0.9.
 --summary-only re-prints it from the CSV without API calls.
 
 ----------------------------------------------------------------
-21. realtime_performance.py
+23. realtime_performance.py
 ----------------------------------------------------------------
 Test script measuring real-time performance. It plays
 PERF_VIDEOS_PER_SUBSET FaceForensics++ clips per subset in real
@@ -483,7 +546,7 @@ another is running exits at once, because concurrent tests compete
 for the screen, the CPU and BitMind's per-key rate limit.
 
 ----------------------------------------------------------------
-22. screen_face_pipeline.py
+24. screen_face_pipeline.py
 ----------------------------------------------------------------
 Test script for the screen capture -> face crop -> face tracking
 workflow, up to the JPEG the app submits to BitMind. BitMind is not
@@ -508,7 +571,7 @@ JPEG of each face track to results/pipeline_crops_<time>/. Esc in the
 video window stops the run early.
 
 ----------------------------------------------------------------
-23. deepfake_detector.spec
+25. deepfake_detector.spec
 ----------------------------------------------------------------
 PyInstaller build file that packages the app as a Windows program
 (pyinstaller deepfake_detector.spec --noconfirm). It produces a

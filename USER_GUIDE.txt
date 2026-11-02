@@ -90,10 +90,12 @@ window. All three indicators should show a green tick:
 
   CONTROL BAR (below the preview)
       ▶ Start / ◻ Stop   start or stop a detection session
+      ↻                  re-check every face on screen (section 9)
       📷 Screenshot      save a full-screen image now
       ✕ Clear Zone       remove the detection zone (section 9)
       ⛶ Mini Mode        shrink to a small always-on-top panel
-      ⚙ Settings         threshold and alert options
+      ⚙ Settings         threshold, alert, window and shortcut
+                         options
       ?                  open the Quick Start guide
 
   CONFIDENCE SCORE (right)
@@ -165,9 +167,10 @@ about 10–15 seconds, longer when many faces are on screen. Up to
 Once decided, a face keeps its verdict for as long as it stays on
 screen. A face that leaves and comes back is checked again.
 
-Detection Analysis lists the reasons for the latest verdict. For
-a DEEPFAKE face the app also runs its own image checks and lists
-any that fire:
+Detection Analysis lists the reasons for the latest verdict; rest
+the mouse on a face box to see that face's own. For a DEEPFAKE
+face the app also runs its own image checks and lists any that
+fire:
   - unusual high-frequency patterns, typical of AI upscaling;
   - a noise mismatch between the face and its surroundings, which
     suggests the face was blended in;
@@ -208,8 +211,21 @@ call stays in view. It shows:
   - the session status, with ▶ Start, ◻ Stop and ⤢ (back to the
     full window);
   - live thumbnails of up to 3 faces, most suspicious first, with
-    their scores and a green or red border;
+    their scores and a green or red border (amber while the face
+    is being re-checked);
   - a one-line alert banner with an Acknowledge button.
+
+The face thumbnails respond to the mouse:
+  - Rest the mouse on a thumbnail to see its verdict, score and
+    the reasons behind it.
+  - Click a thumbnail to mark that face where it is on the screen:
+    a box with its score appears over the face for about 3 seconds,
+    then fades. Rest the mouse on the box to keep it and see the
+    reasons; click it to close it at once. The box is hidden from
+    the capture, so it never affects detection. It needs Windows 10
+    version 2004 or later.
+  - Shift+click a thumbnail to re-check that face without leaving
+    Mini Mode.
 
 Detection keeps running unchanged. Press ⤢ to return to the full
 window.
@@ -226,9 +242,17 @@ right-click the preview or press ✕ Clear Zone, including in later
 sessions.
 
 Re-check: to get a fresh verdict for a face, click the round ↻
-button beside its badge. The box turns amber ("Re-checking…")
-until the new verdict arrives. This is useful after changing the
-threshold, or when a verdict looks wrong.
+button beside its badge, or hold Shift and click the face itself
+(or its thumbnail in Mini Mode). The box turns amber
+("Re-checking…") until the new verdict arrives. This is useful
+after changing the threshold, or when a verdict looks wrong.
+
+To re-check every face on screen at once, press ↻ in the control
+bar or the re-check shortcut, Ctrl+Alt+R by default. The shortcut
+works from any app, so you can press it while watching the call
+or video. Faces are re-checked a few at a time, so with many faces
+on screen the last ones take longer. The shortcut can be changed
+or turned off in Settings.
 
 
 10. SETTINGS
@@ -237,11 +261,18 @@ Press ⚙ Settings to change:
   - Deepfake threshold (5%–95%, default 70%): faces scoring at or
     above it are marked DEEPFAKE. A lower value catches more
     deepfakes but marks more real faces as fake; a higher value
-    does the opposite. It applies to new verdicts; use ↻ to
-    re-check a face already decided.
+    does the opposite. It applies to new verdicts; use the
+    re-check shortcut or ↻ to re-check faces already decided.
   - Beep on alert.
   - Desktop notification on alert.
   - Save evidence screenshot on alert.
+  - Keep window on top of other windows (off by default). Mini
+    Mode is always on top either way.
+  - Re-check all faces shortcut (Ctrl+Alt+R by default): click the
+    box and press the new key combination. Use Ctrl, Alt or Win
+    with a letter or digit, or a function key (F1–F24). Clear the
+    box to turn the shortcut off. If another app already uses the
+    combination, the System Log says so; choose another one.
 
 Save applies the changes at once and keeps them for the next
 launch. Reset to defaults restores the original values.
